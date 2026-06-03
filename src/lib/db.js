@@ -2,17 +2,20 @@ import { supabase } from './supabase'
 
 // ── Default routine blocks ────────────────────────────────────────────────────
 
+// Block IDs that are always mandatory and linked to the Diet screen
+export const DIET_BLOCK_IDS = ['breakfast', 'lunch', 'dinner']
+
 export const DEFAULT_BLOCKS = [
   { id: 'wake_up',    name: 'Wake up',         planned_time: '07:00', type: 'mandatory', enabled: true },
   { id: 'stretching', name: 'Stretching',       planned_time: '07:15', type: 'optional',  enabled: true },
   { id: 'breakfast',  name: 'Breakfast',        planned_time: '07:45', type: 'mandatory', enabled: true },
   { id: 'study',      name: 'Study / Upskill',  planned_time: '08:30', type: 'optional',  enabled: true },
   { id: 'work1',      name: 'Work block 1',     planned_time: '10:00', type: 'optional',  enabled: true },
-  { id: 'lunch',      name: 'Lunch',            planned_time: '13:30', type: 'optional',  enabled: true },
+  { id: 'lunch',      name: 'Lunch',            planned_time: '13:30', type: 'mandatory', enabled: true },
   { id: 'work2',      name: 'Work block 2',     planned_time: '15:00', type: 'optional',  enabled: true },
   { id: 'workout',    name: 'Workout',          planned_time: '17:30', type: 'mandatory', enabled: true },
   { id: 'music',      name: 'Music / Side gig', planned_time: '19:00', type: 'optional',  enabled: true },
-  { id: 'dinner',     name: 'Dinner',           planned_time: '22:00', type: 'optional',  enabled: true },
+  { id: 'dinner',     name: 'Dinner',           planned_time: '22:00', type: 'mandatory', enabled: true },
 ]
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -109,7 +112,11 @@ export async function getRoutineSettings(userId) {
     await saveRoutineSettings(userId, { blocks: DEFAULT_BLOCKS })
     return { blocks: DEFAULT_BLOCKS }
   }
-  return { blocks: data.blocks }
+  // Migrate existing users: ensure diet blocks are always mandatory + enabled
+  const migrated = data.blocks.map(b =>
+    DIET_BLOCK_IDS.includes(b.id) ? { ...b, type: 'mandatory', enabled: true } : b
+  )
+  return { blocks: migrated }
 }
 
 export async function saveRoutineSettings(userId, settings) {

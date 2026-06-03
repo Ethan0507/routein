@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { CheckCircle2, Clock, AlertCircle, Settings, X, Flame, Loader2 } from 'lucide-react'
+import { CheckCircle2, Clock, AlertCircle, Settings, X, Flame, Loader2, Utensils } from 'lucide-react'
 import Modal from '../components/Modal'
-import { getRoutineSettings, saveRoutineSettings, getRoutineLogsForDate, upsertRoutineLog, getRoutineLogsForRange } from '../lib/db'
+import {
+  getRoutineSettings, saveRoutineSettings, getRoutineLogsForDate, upsertRoutineLog, getRoutineLogsForRange,
+  getActiveMealPlan, getMealLogsForDate, upsertMealLog, deleteMealLog, DIET_BLOCK_IDS,
+} from '../lib/db'
+import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
 import { useAuth } from '../contexts/AuthContext'
-import { todayStr, formatTime, nowHHmm, uid, isTimePast, lastNDays } from '../lib/utils'
+import { todayStr, formatTime, nowHHmm, uid, isTimePast, lastNDays, getDayIndexForPlan } from '../lib/utils'
 
 function blockStatus(block, log) {
   if (log?.actual_time) return 'logged'
@@ -38,18 +42,31 @@ export default function RoutineScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const tickRef = useRef(null)
 
+  // Diet-linked state
+  const [dayMeals, setDayMeals]   = useState(null)  // today's plan meals { breakfast, lunch, dinner, ... }
+  const [mealLogs, setMealLogs]   = useState({})    // { slot: log }
+  const [dietLogging, setDietLogging] = useState(null) // block.id being diet-logged
+
   const reload = useCallback(async () => {
     if (!user) return
     try {
-      const [s, todayLogs, rangeLogs] = await Promise.all([
+      const [s, todayLogs, rangeLogs, activePlan, todayMealLogs] = await Promise.all([
         getRoutineSettings(user.id),
         getRoutineLogsForDate(user.id, today),
         getRoutineLogsForRange(user.id, lastNDays(60)[0], today),
+        getActiveMealPlan(user.id),
+        getMealLogsForDate(user.id, today),
       ])
       setSettings(s)
       setLogs(todayLogs)
       const mandatory = s.blocks.filter(b => b.type === 'mandatory' && b.enabled).map(b => b.id)
       setStreak(computeStreak(rangeLogs, mandatory))
+
+      if (activePlan?.plan) {
+        const dayIdx = getDayIndexForPlan(activePlan.created_at)
+        setDayMeals(activePlan.plan[dayIdx] || activePlan.plan[0] || null)
+      }
+      setMealLogs(todayMealLogs)
     } finally {
       setLoading(false)
     }
@@ -74,14 +91,39 @@ export default function RoutineScreen() {
   const getLog = blockId => logs.find(l => l.block_id === blockId) || null
 
   async function logBlock(block) {
+    const logTime = nowHHmm()
+    // Log routine block
     await upsertRoutineLog(user.id, today, {
       block_id:     block.id,
       block_name:   block.name,
       block_type:   block.type,
       planned_time: block.planned_time,
-      actual_time:  nowHHmm(),
+      actual_time:  logTime,
       note:         getLog(block.id)?.note || null,
     })
+
+    // For diet-linked blocks, also log in meal_logs (AI macro estimation in background)
+    if (DIET_BLOCK_IDS.includes(block.id)) {
+      setDietLogging(block.id)
+      try {
+        const meal = dayMeals?.[block.id]
+        let nutrition = null
+        if (meal) {
+          try {
+            const desc = `${meal.name}. Ingredients: ${(meal.ingredients || []).map(i => `${i.quantity} ${i.name}`).join(', ')}`
+            nutrition = await analyzeLoggedMealDescription(desc)
+          } catch { /* log without macros */ }
+        }
+        await upsertMealLog(user.id, today, block.id, {
+          completed:   true,
+          consumed_at: logTime,
+          nutrition,
+        })
+      } finally {
+        setDietLogging(null)
+      }
+    }
+
     await reload()
   }
 
@@ -89,6 +131,10 @@ export default function RoutineScreen() {
     const existing = getLog(block.id)
     if (!existing) return
     await upsertRoutineLog(user.id, today, { ...existing, actual_time: null })
+    // Also remove meal log for diet-linked blocks
+    if (DIET_BLOCK_IDS.includes(block.id)) {
+      await deleteMealLog(user.id, today, block.id).catch(() => {})
+    }
     await reload()
   }
 
@@ -173,6 +219,9 @@ export default function RoutineScreen() {
                 onLog={() => logBlock(block)}
                 onUnlog={() => unlogBlock(block)}
                 onNote={() => openNoteModal(block)}
+                planMeal={DIET_BLOCK_IDS.includes(block.id) ? dayMeals?.[block.id] : null}
+                mealLog={DIET_BLOCK_IDS.includes(block.id) ? mealLogs[block.id] : null}
+                isDietLogging={dietLogging === block.id}
               />
             ))}
           </div>
@@ -206,10 +255,12 @@ export default function RoutineScreen() {
   )
 }
 
-function BlockRow({ block, log, status, onLog, onUnlog, onNote }) {
-  const isLogged = status === 'logged'
-  const isMissed = status === 'missed'
-  const dotBg = isLogged ? 'bg-teal-500 border-teal-500' : isMissed ? 'bg-blue-500 border-blue-500' : 'bg-white border-border'
+function BlockRow({ block, log, status, onLog, onUnlog, onNote, planMeal, mealLog, isDietLogging }) {
+  const isLogged  = status === 'logged'
+  const isMissed  = status === 'missed'
+  const isDiet    = !!planMeal || DIET_BLOCK_IDS.includes(block.id)
+  const nutrition = mealLog?.nutrition
+  const dotBg     = isLogged ? 'bg-teal-500 border-teal-500' : isMissed ? 'bg-blue-500 border-blue-500' : 'bg-white border-border'
 
   return (
     <div className="flex gap-3 relative">
@@ -230,11 +281,40 @@ function BlockRow({ block, log, status, onLog, onUnlog, onNote }) {
                   required
                 </span>
               )}
+              {isDiet && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-500 flex items-center gap-0.5">
+                  <Utensils size={9} />diet
+                </span>
+              )}
             </div>
-            <p className={`text-xs mt-0.5 ${isLogged || isMissed ? 'opacity-70' : 'text-textSecondary'}`}>
+
+            {/* Planned meal name */}
+            {planMeal && (
+              <p className={`text-xs font-medium mt-0.5 truncate ${isLogged ? 'text-teal-600/80' : 'text-textSecondary'}`}>
+                {planMeal.name}
+              </p>
+            )}
+
+            <p className={`text-xs mt-0.5 ${isLogged || isMissed ? 'opacity-60' : 'text-textSecondary'}`}>
               Planned {formatTime(block.planned_time)}
               {isLogged && log?.actual_time && ` · Logged ${formatTime(log.actual_time)}`}
             </p>
+
+            {/* Macros from diet log */}
+            {isLogged && nutrition?.calories && (
+              <p className="text-[10px] text-teal-600 mt-0.5">
+                {nutrition.calories} kcal · {nutrition.protein}g P · {nutrition.carbs}g C · {nutrition.fat}g F
+              </p>
+            )}
+            {isLogged && isDiet && !nutrition?.calories && !isDietLogging && (
+              <p className="text-[10px] text-textSecondary/60 mt-0.5">Macros not estimated</p>
+            )}
+            {isDietLogging && (
+              <p className="text-[10px] text-teal-500 mt-0.5 flex items-center gap-1">
+                <Loader2 size={9} className="animate-spin" />Estimating macros…
+              </p>
+            )}
+
             {log?.note && (
               <p className="text-xs italic text-textSecondary mt-1 line-clamp-2">"{log.note}"</p>
             )}
@@ -251,8 +331,12 @@ function BlockRow({ block, log, status, onLog, onUnlog, onNote }) {
                 Undo
               </button>
             ) : (
-              <button onClick={onLog} className={`text-xs px-2.5 py-1 rounded-lg font-semibold ${isMissed ? 'bg-blue-500 text-white active:bg-blue-600' : 'bg-teal-500 text-white active:bg-teal-600'}`}>
-                Log
+              <button
+                onClick={onLog}
+                disabled={isDietLogging}
+                className={`text-xs px-2.5 py-1 rounded-lg font-semibold disabled:opacity-50 ${isMissed ? 'bg-blue-500 text-white active:bg-blue-600' : 'bg-teal-500 text-white active:bg-teal-600'}`}
+              >
+                {isDietLogging ? <Loader2 size={12} className="animate-spin" /> : 'Log'}
               </button>
             )}
           </div>
@@ -317,18 +401,31 @@ function RoutineSettings({ open, onClose, settings, onSave }) {
         </div>
         <div className="px-4 py-4 space-y-2">
           <p className="text-xs text-textSecondary mb-3">Toggle blocks on/off or edit their name and planned time.</p>
-          {blocks.map(block => (
-            <div key={block.id} className="bg-white rounded-xl border border-border p-3">
+          {blocks.map(block => {
+            const isDiet = DIET_BLOCK_IDS.includes(block.id)
+            return (
+            <div key={block.id} className={`bg-white rounded-xl border p-3 ${isDiet ? 'border-orange-200' : 'border-border'}`}>
               <div className="flex items-center gap-3 mb-2">
-                <button
-                  onClick={() => updateBlock(block.id, 'enabled', !block.enabled)}
-                  className={`w-10 h-6 rounded-full relative transition-colors ${block.enabled ? 'bg-teal-500' : 'bg-border'}`}
-                >
-                  <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${block.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                </button>
+                {isDiet ? (
+                  <div className="w-10 h-6 rounded-full bg-teal-500 relative opacity-60 cursor-not-allowed flex-shrink-0">
+                    <span className="absolute top-0.5 translate-x-4 w-5 h-5 bg-white rounded-full shadow" />
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => updateBlock(block.id, 'enabled', !block.enabled)}
+                    className={`w-10 h-6 rounded-full relative transition-colors flex-shrink-0 ${block.enabled ? 'bg-teal-500' : 'bg-border'}`}
+                  >
+                    <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${block.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                  </button>
+                )}
                 <span className={`text-xs font-semibold uppercase px-1.5 py-0.5 rounded-full ${block.type === 'mandatory' ? 'bg-blue-50 text-blue-500' : 'bg-gray-100 text-textSecondary'}`}>
                   {block.type}
                 </span>
+                {isDiet && (
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-50 text-orange-500 flex items-center gap-0.5 ml-auto">
+                    <Utensils size={9} />diet linked
+                  </span>
+                )}
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
@@ -350,7 +447,7 @@ function RoutineSettings({ open, onClose, settings, onSave }) {
                 </div>
               </div>
             </div>
-          ))}
+          )})}
         </div>
         <div className="px-4 pb-8">
           <button
