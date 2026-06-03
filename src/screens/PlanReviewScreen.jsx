@@ -23,6 +23,8 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
   const [selectedDay, setSelectedDay] = useState(0)
   const [editModal, setEditModal]     = useState(null)  // { dayIdx, slot, meal }
   const [regenDay, setRegenDay]       = useState(null)  // dayIdx being regenerated
+  const [promptModal, setPromptModal] = useState(null)  // dayIdx awaiting regen with prompt
+  const [promptText, setPromptText]   = useState('')
   const [accepting, setAccepting]     = useState(false)
   const [error, setError]             = useState('')
 
@@ -69,11 +71,22 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
   }
 
   // ── Regenerate a day ─────────────────────────────────────────────────────────
-  async function regenerateDay(dayIdx) {
+  function openRegenPrompt(dayIdx) {
+    setPromptText('')
+    setPromptModal(dayIdx)
+  }
+
+  async function confirmRegen() {
+    const dayIdx = promptModal
+    setPromptModal(null)
     setRegenDay(dayIdx)
     setError('')
     try {
-      const result = await generateMealPlanWithLLM(profile, { alternate: true, currentPlan: plan })
+      const result = await generateMealPlanWithLLM(profile, {
+        alternate:    true,
+        currentPlan:  plan,
+        userPrompt:   promptText.trim() || undefined,
+      })
       const newDay = result.plan[dayIdx] || result.plan[0]
       setPlan(prev => prev.map((d, i) => i === dayIdx ? { ...newDay, day: i + 1 } : d))
     } catch (err) {
@@ -147,7 +160,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
         <div className="flex items-center justify-between mb-1">
           <p className="text-sm font-semibold text-textPrimary">Day {selectedDay + 1}</p>
           <button
-            onClick={() => regenerateDay(selectedDay)}
+            onClick={() => openRegenPrompt(selectedDay)}
             disabled={regenDay === selectedDay}
             className="flex items-center gap-1.5 text-xs text-textSecondary border border-border rounded-lg px-2.5 py-1.5 active:bg-bg disabled:opacity-50"
           >
@@ -185,6 +198,29 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
         </button>
         <p className="text-xs text-textSecondary text-center mt-2">You can edit any meal at any time after starting</p>
       </div>
+
+      {/* Regen prompt modal */}
+      <Modal open={promptModal !== null} onClose={() => setPromptModal(null)} title="New suggestions">
+        <div className="space-y-3">
+          <p className="text-xs text-textSecondary">
+            Optionally tell the AI what to change for Day {(promptModal ?? 0) + 1}. Leave blank for a random refresh.
+          </p>
+          <textarea
+            className="w-full border border-border rounded-xl px-3 py-2.5 text-sm text-textPrimary focus:outline-none focus:border-teal-500 resize-none"
+            rows={3}
+            placeholder='e.g. "More high-protein options" or "No fish this day"'
+            value={promptText}
+            onChange={e => setPromptText(e.target.value)}
+            autoFocus
+          />
+          <button
+            onClick={confirmRegen}
+            className="w-full bg-teal-500 text-white font-semibold py-3 rounded-xl active:bg-teal-600"
+          >
+            Generate
+          </button>
+        </div>
+      </Modal>
 
       {/* Edit meal modal */}
       <Modal open={!!editModal} onClose={() => setEditModal(null)} title={editModal ? `Edit — ${SLOT_LABELS[editModal.slot]}` : ''}>

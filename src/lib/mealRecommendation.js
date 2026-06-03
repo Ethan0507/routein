@@ -182,4 +182,43 @@ export async function generateMealPlanWithLLM(profile, options = {}) {
   }
 }
 
+// ── Macro estimation from free text ──────────────────────────────────────────
+
+export async function analyzeLoggedMealDescription(description) {
+  if (!OPENAI_API_KEY) {
+    return { calories: null, protein: null, carbs: null, fat: null }
+  }
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: 0,
+      max_tokens: 150,
+      response_format: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: 'Estimate macros for the meal described. Return ONLY JSON: { "calories": <int>, "protein": <int>, "carbs": <int>, "fat": <int> }',
+        },
+        { role: 'user', content: description },
+      ],
+    }),
+  })
+
+  if (!res.ok) throw new Error('Failed to estimate macros')
+  const data    = await res.json()
+  const content = JSON.parse(data.choices[0].message.content)
+  return {
+    calories: content.calories || null,
+    protein:  content.protein  || null,
+    carbs:    content.carbs    || null,
+    fat:      content.fat      || null,
+  }
+}
+
 export { estimateTargets, MEAL_SLOTS }

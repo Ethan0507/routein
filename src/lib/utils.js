@@ -49,7 +49,62 @@ export function shortDate(dateStr) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
+export const MEAL_SLOTS = ['breakfast', 'midMorning', 'lunch', 'preWorkout', 'postWorkout', 'dinner', 'beforeBed']
+
 export const CATEGORIES = [
   'Produce', 'Protein', 'Dairy', 'Grains', 'Snacks',
   'Drinks', 'Condiments', 'Frozen', 'Other',
 ]
+
+// ── Meal-plan helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Aggregates every ingredient across all 7 days of a meal plan into a flat
+ * deduplicated list. Items with the same normalised name are merged and their
+ * quantities are collected.
+ * Returns: [{ key, name, quantities: string[], totalQty }]
+ */
+export function aggregateGroceriesFromPlan(plan) {
+  if (!plan || !Array.isArray(plan)) return []
+
+  const map = {}
+
+  for (const day of plan) {
+    for (const [slotKey, slot] of Object.entries(day)) {
+      if (slotKey === 'day') continue
+      if (!slot || typeof slot !== 'object' || !Array.isArray(slot.ingredients)) continue
+      for (const ing of slot.ingredients) {
+        if (!ing?.name) continue
+        const key = ing.name.toLowerCase().trim()
+        if (!map[key]) {
+          map[key] = { key, name: ing.name, quantities: [] }
+        }
+        if (ing.quantity) {
+          map[key].quantities.push(ing.quantity)
+        }
+      }
+    }
+  }
+
+  return Object.values(map)
+    .map(item => ({
+      key: item.key,
+      name: item.name,
+      quantities: item.quantities,
+      // Show the first distinct quantities joined — e.g. "60g, 1 cup"
+      totalQty: [...new Set(item.quantities)].join(', '),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * Given the ISO timestamp when a meal plan was accepted / saved,
+ * returns which 0-indexed day of the 7-day plan to show today (0–6).
+ */
+export function getDayIndexForPlan(planCreatedAt) {
+  if (!planCreatedAt) return 0
+  const created = new Date(planCreatedAt)
+  const now     = new Date()
+  const diffDays = Math.floor((now - created) / (1000 * 60 * 60 * 24))
+  return diffDays % 7
+}

@@ -74,11 +74,11 @@ export async function deleteDietEntry(userId, id) {
 export async function getGroceries(userId) {
   const { data, error } = await supabase
     .from('groceries')
-    .select('items')
+    .select('items, have_state')
     .eq('user_id', userId)
     .maybeSingle()
   assertNoError(error, 'getGroceries')
-  return data?.items || []
+  return { items: data?.items || [], haveState: data?.have_state || {} }
 }
 
 export async function saveGroceries(userId, items) {
@@ -86,6 +86,13 @@ export async function saveGroceries(userId, items) {
     .from('groceries')
     .upsert({ user_id: userId, items, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
   assertNoError(error, 'saveGroceries')
+}
+
+export async function saveGroceryHaveState(userId, haveState) {
+  const { error } = await supabase
+    .from('groceries')
+    .upsert({ user_id: userId, have_state: haveState, updated_at: new Date().toISOString() }, { onConflict: 'user_id' })
+  assertNoError(error, 'saveGroceryHaveState')
 }
 
 // ── Routine settings ──────────────────────────────────────────────────────────
@@ -160,6 +167,46 @@ export async function upsertRoutineLog(userId, dateStr, log) {
       note: log.note || null,
     }, { onConflict: 'user_id,date,block_id' })
   assertNoError(error, 'upsertRoutineLog')
+}
+
+// ── Meal logs (plan-based tracking) ──────────────────────────────────────────
+
+export async function getMealLogsForDate(userId, dateStr) {
+  const { data, error } = await supabase
+    .from('meal_logs')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('date', dateStr)
+  assertNoError(error, 'getMealLogsForDate')
+  // Return as { [meal_slot]: log }
+  const bySlot = {}
+  for (const log of data || []) bySlot[log.meal_slot] = log
+  return bySlot
+}
+
+export async function upsertMealLog(userId, dateStr, mealSlot, logData) {
+  const { error } = await supabase
+    .from('meal_logs')
+    .upsert({
+      user_id:           userId,
+      date:              dateStr,
+      meal_slot:         mealSlot,
+      completed:         logData.completed ?? true,
+      consumed_at:       logData.consumed_at || null,
+      custom_description: logData.custom_description || null,
+      nutrition:         logData.nutrition || null,
+    }, { onConflict: 'user_id,date,meal_slot' })
+  assertNoError(error, 'upsertMealLog')
+}
+
+export async function deleteMealLog(userId, dateStr, mealSlot) {
+  const { error } = await supabase
+    .from('meal_logs')
+    .delete()
+    .eq('user_id', userId)
+    .eq('date', dateStr)
+    .eq('meal_slot', mealSlot)
+  assertNoError(error, 'deleteMealLog')
 }
 
 // ── Meal plans ────────────────────────────────────────────────────────────────
