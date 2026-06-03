@@ -74,8 +74,23 @@ function buildFallbackPlan(profile) {
 
 // ── OpenAI plan generation ────────────────────────────────────────────────────
 
+const REQUIRED_SLOTS  = ['breakfast', 'lunch', 'dinner']
+const OPTIONAL_SLOTS  = ['midMorning', 'preWorkout', 'postWorkout', 'beforeBed']
+const ALL_SLOTS       = [...REQUIRED_SLOTS, 'midMorning', 'preWorkout', 'postWorkout', 'beforeBed']
+
+// Canonical order for display/prompt
+const SLOT_ORDER = ['breakfast', 'midMorning', 'lunch', 'preWorkout', 'postWorkout', 'dinner', 'beforeBed']
+
 function buildPrompt(profile, options = {}) {
-  const { userPrompt, currentPlan, alternate } = options
+  const { userPrompt, currentPlan, alternate, enabledSlots } = options
+
+  // Slots to include: always required + whichever optional ones are enabled
+  const slots = SLOT_ORDER.filter(s =>
+    REQUIRED_SLOTS.includes(s) || (enabledSlots ? enabledSlots.includes(s) : true)
+  )
+
+  const mealEntry = '{ "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] }'
+  const slotLines = slots.map(s => `      "${s}": ${mealEntry}`).join(',\n')
 
   const base = `Create a personalized 7-day meal plan for:
 - Age: ${profile.age || 'unknown'}
@@ -98,19 +113,14 @@ Return ONLY valid JSON with EXACTLY this structure — no extra keys, no markdow
   "plan": [
     {
       "day": 1,
-      "breakfast":   { "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] },
-      "midMorning":  { "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] },
-      "lunch":       { "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] },
-      "preWorkout":  { "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] },
-      "postWorkout": { "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] },
-      "dinner":      { "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] },
-      "beforeBed":   { "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] }
+${slotLines}
     }
   ]
 }
 
 Rules:
 - All 7 days required
+- Only include the meal keys listed above — do not add extras
 - Respect every allergy/restriction
 - Vary meals — no repeats in first 3 days
 - Quantities specific (60g, 1 cup, 2 tbsp)
@@ -119,6 +129,8 @@ Rules:
 
   return base
 }
+
+export { REQUIRED_SLOTS, OPTIONAL_SLOTS }
 
 export async function generateMealPlanWithLLM(profile, options = {}) {
   if (!OPENAI_API_KEY) {

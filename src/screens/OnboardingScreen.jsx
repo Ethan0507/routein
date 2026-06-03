@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Loader2, Zap, ClipboardList, ChevronRight } from 'lucide-react'
-import { generateMealPlanWithLLM, estimateTargets } from '../lib/mealRecommendation'
+import { Loader2, Zap, ClipboardList, ChevronRight, Lock } from 'lucide-react'
+import { generateMealPlanWithLLM, estimateTargets, OPTIONAL_SLOTS } from '../lib/mealRecommendation'
 import { upsertProfile } from '../lib/db'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -14,6 +14,15 @@ const EXERCISE_OPTIONS = [
 
 const SEX_OPTIONS = ['Male', 'Female', 'Other']
 
+const OPTIONAL_SLOT_LABELS = {
+  midMorning:  { label: 'Mid-morning snack', desc: 'A light bite between breakfast & lunch' },
+  preWorkout:  { label: 'Pre-workout',        desc: 'Quick fuel before training' },
+  postWorkout: { label: 'Post-workout',       desc: 'Recovery meal after training' },
+  beforeBed:   { label: 'Before bed',         desc: 'Slow-digesting protein snack' },
+}
+
+const DEFAULT_ENABLED_SLOTS = ['midMorning', 'preWorkout', 'postWorkout', 'beforeBed']
+
 export default function OnboardingScreen({ onPlanGenerated }) {
   const { user } = useAuth()
   const [step, setStep]     = useState('welcome') // welcome | survey | generating
@@ -21,9 +30,19 @@ export default function OnboardingScreen({ onPlanGenerated }) {
   const [form, setForm]     = useState({
     age: '', sex: 'Male', height: '', weight: '',
     allergies: '', exerciseFrequency: 'moderately active',
+    enabledSlots: DEFAULT_ENABLED_SLOTS,
   })
 
   function set(key, val) { setForm(f => ({ ...f, [key]: val })) }
+
+  function toggleSlot(slot) {
+    setForm(f => ({
+      ...f,
+      enabledSlots: f.enabledSlots.includes(slot)
+        ? f.enabledSlots.filter(s => s !== slot)
+        : [...f.enabledSlots, slot],
+    }))
+  }
 
   async function handleQuickStart() {
     setStep('generating')
@@ -46,7 +65,7 @@ export default function OnboardingScreen({ onPlanGenerated }) {
     setStep('generating')
     setError('')
     try {
-      const result = await generateMealPlanWithLLM(form)
+      const result = await generateMealPlanWithLLM(form, { enabledSlots: form.enabledSlots })
       await upsertProfile(user.id, {
         onboarding_complete: true,
         plan_accepted: false,
@@ -56,6 +75,7 @@ export default function OnboardingScreen({ onPlanGenerated }) {
         weight: form.weight,
         allergies: form.allergies,
         exercise_frequency: form.exerciseFrequency,
+        meal_slots: form.enabledSlots,
         targets: result.targets,
       })
       onPlanGenerated({ ...result, profile: form })
@@ -212,6 +232,50 @@ export default function OnboardingScreen({ onPlanGenerated }) {
               className={inputCls}
             />
             <p className="text-[11px] text-textSecondary mt-1">Comma-separated. Leave blank if none.</p>
+          </Field>
+
+          {/* Meal slots */}
+          <Field label="Meal slots">
+            <div className="space-y-2">
+              {/* Required — locked */}
+              {[
+                { label: 'Breakfast',  desc: 'Required' },
+                { label: 'Lunch',      desc: 'Required' },
+                { label: 'Dinner',     desc: 'Required' },
+              ].map(({ label, desc }) => (
+                <div key={label} className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-border bg-bg opacity-60">
+                  <Lock size={14} className="text-textSecondary shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-textPrimary">{label}</p>
+                    <p className="text-xs text-textSecondary">{desc}</p>
+                  </div>
+                </div>
+              ))}
+              {/* Optional — toggleable */}
+              {OPTIONAL_SLOTS.map(slot => {
+                const { label, desc } = OPTIONAL_SLOT_LABELS[slot]
+                const enabled = form.enabledSlots.includes(slot)
+                return (
+                  <button key={slot} type="button"
+                    onClick={() => toggleSlot(slot)}
+                    className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl border text-sm transition-colors ${
+                      enabled ? 'border-teal-500 bg-teal-50' : 'border-border bg-white'
+                    }`}
+                  >
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+                      enabled ? 'border-teal-500 bg-teal-500' : 'border-border bg-white'
+                    }`}>
+                      {enabled && <div className="w-2 h-2 rounded-full bg-white" />}
+                    </div>
+                    <div className="flex-1">
+                      <p className={`font-medium text-sm ${enabled ? 'text-teal-700' : 'text-textPrimary'}`}>{label}</p>
+                      <p className="text-xs text-textSecondary">{desc}</p>
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+            <p className="text-[11px] text-textSecondary mt-1.5">Toggle optional slots on or off — you can change this later.</p>
           </Field>
 
           <button

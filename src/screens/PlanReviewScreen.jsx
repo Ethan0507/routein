@@ -20,6 +20,12 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
   const [plan, setPlan]         = useState(planData.plan)
   const [targets]               = useState(planData.targets)
   const [profile]               = useState(planData.profile || {})
+  // Slots to show: always required ones + enabled optional ones
+  const visibleSlots = MEAL_SLOTS.filter(slot =>
+    ['breakfast','lunch','dinner'].includes(slot) ||
+    !profile.enabledSlots ||
+    profile.enabledSlots.includes(slot)
+  )
   const [selectedDay, setSelectedDay] = useState(0)
   const [editModal, setEditModal]     = useState(null)  // { dayIdx, slot, meal }
   const [regenDay, setRegenDay]       = useState(null)  // dayIdx being regenerated
@@ -86,6 +92,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
         alternate:    true,
         currentPlan:  plan,
         userPrompt:   promptText.trim() || undefined,
+        enabledSlots: profile.enabledSlots || undefined,
       })
       const newDay = result.plan[dayIdx] || result.plan[0]
       setPlan(prev => prev.map((d, i) => i === dayIdx ? { ...newDay, day: i + 1 } : d))
@@ -171,7 +178,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
           </button>
         </div>
 
-        {MEAL_SLOTS.map(slot => {
+        {visibleSlots.map(slot => {
           const meal = dayData?.[slot]
           if (!meal) return null
           return (

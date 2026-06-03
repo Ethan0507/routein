@@ -4,9 +4,9 @@ import Modal from '../components/Modal'
 import {
   getDietEntriesForDate, getDietEntriesForRange, addDietEntry, deleteDietEntry,
   getMealLogsForDate, upsertMealLog, deleteMealLog,
-  getActiveMealPlan, getProfile,
+  getActiveMealPlan, getProfile, upsertProfile,
 } from '../lib/db'
-import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
+import { analyzeLoggedMealDescription, OPTIONAL_SLOTS } from '../lib/mealRecommendation'
 import { useAuth } from '../contexts/AuthContext'
 import { todayStr, formatTime, nowHHmm, lastNDays, shortDate, getDayIndexForPlan, MEAL_SLOTS } from '../lib/utils'
 
@@ -31,10 +31,14 @@ export default function DietScreen() {
   const { user } = useAuth()
 
   // Plan state
-  const [plan, setPlan]         = useState(null)   // active meal plan row
-  const [dayMeals, setDayMeals] = useState(null)   // today's meal objects from plan
-  const [targets, setTargets]   = useState(null)   // { maintenanceCalories, proteinG, carbsG, fatG }
-  const [mealLogs, setMealLogs] = useState({})     // { slot: log }
+  const [plan, setPlan]             = useState(null)   // active meal plan row
+  const [dayMeals, setDayMeals]     = useState(null)   // today's meal objects from plan
+  const [targets, setTargets]       = useState(null)   // { maintenanceCalories, proteinG, carbsG, fatG }
+  const [mealLogs, setMealLogs]     = useState({})     // { slot: log }
+  const [enabledSlots, setEnabledSlots] = useState(null) // null = all; array = filtered
+  const [slotsModalOpen, setSlotsModalOpen] = useState(false)
+  const [slotsDraft, setSlotsDraft]     = useState([])
+  const [slotsSaving, setSlotsSaving]   = useState(false)
 
   // Free-form entries
   const [entries, setEntries]   = useState([])
@@ -62,8 +66,9 @@ export default function DietScreen() {
     if (!user) return
     setLoading(true)
     try {
-      const [activePlan, todayLogs, todayEntries, rangeEntries] = await Promise.all([
+      const [activePlan, profile, todayLogs, todayEntries, rangeEntries] = await Promise.all([
         getActiveMealPlan(user.id),
+        getProfile(user.id),
         getMealLogsForDate(user.id, today),
         getDietEntriesForDate(user.id, today),
         getDietEntriesForRange(user.id, lastNDays(7)[0], today),
@@ -77,6 +82,9 @@ export default function DietScreen() {
         setTargets(activePlan.targets || null)
       }
 
+      const slots = profile?.meal_slots || null
+      setEnabledSlots(slots)
+
       setMealLogs(todayLogs)
       setEntries(todayEntries)
       setHistory(rangeEntries.filter(m => m.date !== today))
@@ -86,6 +94,23 @@ export default function DietScreen() {
   }, [user, today])
 
   useEffect(() => { reload() }, [reload])
+
+  // ── Save enabled slots ────────────────────────────────────────────────────────
+  async function saveSlots() {
+    setSlotsSaving(true)
+    try {
+      await upsertProfile(user.id, { meal_slots: slotsDraft })
+      setEnabledSlots(slotsDraft)
+      setSlotsModalOpen(false)
+    } finally {
+      setSlotsSaving(false)
+    }
+  }
+
+  function openSlotsModal() {
+    setSlotsDraft(enabledSlots ?? OPTIONAL_SLOTS)
+    setSlotsModalOpen(true)
+  }
 
   // ── Log a planned meal (AI estimates macros) ─────────────────────────────────
   async function logPlannedMeal(slot) {
@@ -258,9 +283,22 @@ export default function DietScreen() {
             {/* ── Plan-based meal slots ── */}
             {dayMeals ? (
               <div>
-                <p className="text-sm font-semibold text-textPrimary mb-2">Today's meal plan</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-semibold text-textPrimary">Today's meal plan</p>
+                  <button
+                    onClick={openSlotsModal}
+                    className="flex items-center gap-1 text-xs text-textSecondary border border-border rounded-lg px-2.5 py-1.5 active:bg-bg"
+                  >
+                    <Pencil size={11} />
+                    Edit slots
+                  </button>
+                </div>
                 <div className="space-y-2">
-                  {MEAL_SLOTS.map(slot => {
+                  {MEAL_SLOTS.filter(slot =>
+                    ['breakfast','lunch','dinner'].includes(slot) ||
+                    !enabledSlots ||
+                    enabledSlots.includes(slot)
+                  ).map(slot => {
                     const meal    = dayMeals[slot]
                     if (!meal) return null
                     const log     = mealLogs[slot]
@@ -471,6 +509,53 @@ export default function DietScreen() {
             className="w-full bg-teal-500 text-white font-semibold py-3 rounded-xl mt-1 disabled:opacity-40 active:bg-teal-600 flex items-center justify-center gap-2"
           >
             {freeSaving ? <Loader2 size={16} className="animate-spin" /> : 'Log meal'}
+          </button>
+        </div>
+      </Modal>
+
+      {/* Edit meal slots modal */}
+      <Modal open={slotsModalOpen} onClose={() => setSlotsModalOpen(false)} title="Meal slots">
+        <div className="space-y-3">
+          <p className="text-xs text-textSecondary">Breakfast, Lunch &amp; Dinner are always included.</p>
+          <div className="space-y-2">
+            {OPTIONAL_SLOTS.map(slot => {
+              const labels = {
+                midMorning:  { label: 'Mid-morning snack', desc: 'Light bite between breakfast & lunch' },
+                preWorkout:  { label: 'Pre-workout',        desc: 'Quick fuel before training' },
+                postWorkout: { label: 'Post-workout',       desc: 'Recovery meal after training' },
+                beforeBed:   { label: 'Before bed',         desc: 'Slow-digesting protein snack' },
+              }
+              const { label, desc } = labels[slot]
+              const on = slotsDraft.includes(slot)
+              return (
+                <button
+                  key={slot}
+                  type="button"
+                  onClick={() => setSlotsDraft(d => on ? d.filter(s => s !== slot) : [...d, slot])}
+                  className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl border text-sm transition-colors ${
+                    on ? 'border-teal-500 bg-teal-50' : 'border-border bg-white'
+                  }`}
+                >
+                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    on ? 'border-teal-500 bg-teal-500' : 'border-border bg-white'
+                  }`}>
+                    {on && <div className="w-2 h-2 rounded-full bg-white" />}
+                  </div>
+                  <div className="flex-1">
+                    <p className={`font-medium text-sm ${on ? 'text-teal-700' : 'text-textPrimary'}`}>{label}</p>
+                    <p className="text-xs text-textSecondary">{desc}</p>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+          <p className="text-[11px] text-textSecondary">Changes apply to how your plan is displayed. To regenerate the plan with different slots, go to your profile.</p>
+          <button
+            onClick={saveSlots}
+            disabled={slotsSaving}
+            className="w-full bg-teal-500 text-white font-semibold py-3 rounded-xl disabled:opacity-40 active:bg-teal-600 flex items-center justify-center gap-2"
+          >
+            {slotsSaving ? <Loader2 size={16} className="animate-spin" /> : 'Save'}
           </button>
         </div>
       </Modal>
