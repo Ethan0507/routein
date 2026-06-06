@@ -79,16 +79,50 @@ function buildFallbackPlan(profile) {
 const REQUIRED_SLOTS = ['breakfast', 'lunch', 'dinner']
 const OPTIONAL_SLOTS = ['midMorning', 'preWorkout', 'postWorkout', 'beforeBed']
 
+// Base calorie weight per slot key. Custom slots get a medium snack weight.
+const SLOT_CALORIE_WEIGHTS = {
+  breakfast:   0.25,
+  midMorning:  0.08,
+  lunch:       0.30,
+  preWorkout:  0.06,
+  postWorkout: 0.08,
+  dinner:      0.28,
+  beforeBed:   0.05,
+}
+
+/**
+ * Given the active slot list and total daily calories, returns each slot
+ * annotated with its proportional calorie target.
+ * Weights are normalised so they always sum to 1 regardless of which slots
+ * are active — fewer slots means each remaining slot gets a larger share.
+ */
+function allocateCaloriesPerSlot(activeSlots, maintenanceCalories) {
+  const weights  = activeSlots.map(s => SLOT_CALORIE_WEIGHTS[s.key] ?? 0.10)
+  const total    = weights.reduce((a, b) => a + b, 0)
+  return activeSlots.map((s, i) => ({
+    ...s,
+    targetKcal: Math.round((weights[i] / total) * maintenanceCalories),
+  }))
+}
+
 function buildPrompt(profile, options = {}) {
   const { userPrompt, currentPlan, alternate, slots } = options
 
-  // Use passed slot objects; fall back to defaults
   const activeSlots = getActiveSlots(slots || DEFAULT_MEAL_SLOTS)
-  const slotCount   = activeSlots.length
+
+  // Pre-calculate per-slot calorie targets from Harris-Benedict
+  const targets    = estimateTargets(profile)
+  const slotsWithKcal = allocateCaloriesPerSlot(activeSlots, targets.maintenanceCalories)
 
   const mealEntry = '{ "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] }'
-  // Include label as a comment so the AI understands the meal context
-  const slotLines = activeSlots.map(s => `      "${s.key}": ${mealEntry}  // ${s.label}`).join(',\n')
+  const slotLines = slotsWithKcal
+    .map(s => `      "${s.key}": ${mealEntry}  // ${s.label} (~${s.targetKcal} kcal)`)
+    .join(',\n')
+
+  // Per-slot breakdown shown to the AI so it calibrates portion sizes
+  const slotTargetLines = slotsWithKcal
+    .map(s => `  - ${s.label} (${s.time}): ~${s.targetKcal} kcal`)
+    .join('\n')
 
   const base = `Create a personalized 7-day meal plan for:
 - Age: ${profile.age || 'unknown'}
@@ -97,17 +131,20 @@ function buildPrompt(profile, options = {}) {
 - Weight: ${profile.weight ? profile.weight + ' kg' : 'unknown'}
 - Exercise frequency: ${profile.exerciseFrequency || 'moderately active'}
 - Allergies/restrictions: ${profile.allergies || 'none'}
-- Meals per day: ${slotCount} (distribute daily calories evenly across all ${slotCount} meals)
+- Daily calorie target: ${targets.maintenanceCalories} kcal (protein ${targets.proteinG}g, carbs ${targets.carbsG}g, fat ${targets.fatG}g)
+
+Per-meal calorie targets (adjust ingredient quantities to hit these):
+${slotTargetLines}
 ${alternate && currentPlan ? '\nProvide DIFFERENT meals from the current plan.' : ''}
 ${userPrompt ? `\nExtra instruction: ${userPrompt}` : ''}
 
 Return ONLY valid JSON with EXACTLY this structure — no extra keys, no markdown:
 {
   "targets": {
-    "maintenanceCalories": <number>,
-    "proteinG": <number>,
-    "carbsG": <number>,
-    "fatG": <number>
+    "maintenanceCalories": ${targets.maintenanceCalories},
+    "proteinG": ${targets.proteinG},
+    "carbsG": ${targets.carbsG},
+    "fatG": ${targets.fatG}
   },
   "plan": [
     {
@@ -120,7 +157,7 @@ ${slotLines}
 Rules:
 - All 7 days required
 - Only include the exact meal keys listed above — do not add or rename keys
-- Calories distributed proportionally: larger meals (lunch, dinner) get more, snacks get less
+- Match ingredient quantities so each meal hits its kcal target (±10%)
 - Respect every allergy/restriction
 - Vary meals — no repeats in first 3 days
 - Quantities specific (60g, 1 cup, 2 tbsp)
