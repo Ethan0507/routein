@@ -102,13 +102,15 @@ export default function RoutineScreen() {
       note:         getLog(block.id)?.note || null,
     })
 
-    // For diet-linked blocks, also log in meal_logs (AI macro estimation in background)
+    // For diet-linked blocks, also log in meal_logs
     if (DIET_BLOCK_IDS.includes(block.id)) {
       setDietLogging(block.id)
       try {
         const meal = dayMeals?.[block.id]
-        let nutrition = null
-        if (meal) {
+        // Use nutrition already embedded in the plan; only call AI as a fallback
+        // for plans generated before this feature existed.
+        let nutrition = meal?.nutrition || null
+        if (!nutrition && meal) {
           try {
             const desc = `${meal.name}. Ingredients: ${(meal.ingredients || []).map(i => `${i.quantity} ${i.name}`).join(', ')}`
             nutrition = await analyzeLoggedMealDescription(desc)

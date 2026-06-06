@@ -281,12 +281,20 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
 
 function MealCard({ slot, slotLabel, meal, onEdit }) {
   const [expanded, setExpanded] = useState(false)
+  const n = meal.nutrition
+
   return (
     <div className="bg-white rounded-xl border border-border overflow-hidden">
-      <button className="w-full flex items-center justify-between px-4 py-3 text-left" onClick={() => setExpanded(e => !e)}>
+      {/* Use div + role so we avoid nested <button> */}
+      <div className="w-full flex items-center justify-between px-4 py-3 cursor-pointer select-none" onClick={() => setExpanded(e => !e)}>
         <div className="flex-1 min-w-0">
           <p className="text-[11px] font-semibold text-textSecondary uppercase tracking-wide">{slotLabel}</p>
           <p className="text-sm font-semibold text-textPrimary mt-0.5 truncate">{meal.name}</p>
+          {n?.calories && (
+            <p className="text-[11px] text-textSecondary mt-0.5">
+              {n.calories} kcal · {n.protein}g P · {n.carbs}g C · {n.fat}g F{n.fibre ? ` · ${n.fibre}g fibre` : ''}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-2">
           <button
@@ -297,12 +305,29 @@ function MealCard({ slot, slotLabel, meal, onEdit }) {
           </button>
           {expanded ? <ChevronUp size={16} className="text-textSecondary" /> : <ChevronDown size={16} className="text-textSecondary" />}
         </div>
-      </button>
+      </div>
 
       {expanded && (
         <div className="px-4 pb-4 space-y-3 border-t border-border/60">
+          {/* Macro bar */}
+          {n?.calories && (
+            <div className="pt-3 grid grid-cols-4 gap-1 text-center">
+              {[
+                { label: 'Calories', val: n.calories, unit: 'kcal', color: 'text-teal-600' },
+                { label: 'Protein',  val: n.protein,  unit: 'g',    color: 'text-blue-500' },
+                { label: 'Carbs',    val: n.carbs,     unit: 'g',    color: 'text-orange-400' },
+                { label: 'Fat',      val: n.fat,       unit: 'g',    color: 'text-textSecondary' },
+              ].map(({ label, val, unit, color }) => (
+                <div key={label} className="bg-bg rounded-lg py-1.5">
+                  <p className={`text-sm font-bold ${color}`}>{val}<span className="text-[9px] font-normal ml-0.5">{unit}</span></p>
+                  <p className="text-[9px] text-textSecondary">{label}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
           {meal.ingredients?.length > 0 && (
-            <div className="pt-3">
+            <div className={n?.calories ? '' : 'pt-3'}>
               <p className="text-xs font-semibold text-textSecondary mb-1.5">Ingredients</p>
               <div className="space-y-1">
                 {meal.ingredients.map((ing, i) => (
@@ -314,6 +339,7 @@ function MealCard({ slot, slotLabel, meal, onEdit }) {
               </div>
             </div>
           )}
+
           {meal.recipe && (
             <div>
               <p className="text-xs font-semibold text-textSecondary mb-1">Recipe</p>

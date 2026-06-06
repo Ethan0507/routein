@@ -102,21 +102,23 @@ export default function DietScreen() {
     setSlotsModalOpen(true)
   }
 
-  // ── Log a planned meal (AI estimates macros) ─────────────────────────────────
+  // ── Log a planned meal ────────────────────────────────────────────────────────
   async function logPlannedMeal(slot) {
     const meal = dayMeals?.[slot]
     if (!meal) return
     setLoggingSlot(slot)
     try {
-      let nutrition = null
-      try {
-        const desc = `${meal.name}. Ingredients: ${(meal.ingredients || []).map(i => `${i.quantity} ${i.name}`).join(', ')}`
-        nutrition = await analyzeLoggedMealDescription(desc)
-      } catch {
-        // macro estimation failed — log without macros
+      // Use the nutrition already embedded in the plan by the AI.
+      // Fall back to a live estimate only if the plan pre-dates this feature.
+      let nutrition = meal.nutrition || null
+      if (!nutrition) {
+        try {
+          const desc = `${meal.name}. Ingredients: ${(meal.ingredients || []).map(i => `${i.quantity} ${i.name}`).join(', ')}`
+          nutrition = await analyzeLoggedMealDescription(desc)
+        } catch { /* log without macros */ }
       }
       await upsertMealLog(user.id, today, slot, {
-        completed:  true,
+        completed:   true,
         consumed_at: nowHHmm(),
         nutrition,
       })

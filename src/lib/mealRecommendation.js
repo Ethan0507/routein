@@ -114,12 +114,20 @@ function buildPrompt(profile, options = {}) {
   const targets    = estimateTargets(profile)
   const slotsWithKcal = allocateCaloriesPerSlot(activeSlots, targets.maintenanceCalories)
 
-  const mealEntry = '{ "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] }'
+  // Each meal now includes a nutrition block the AI must estimate
+  const mealEntry = [
+    '{',
+    '    "name": "<string>",',
+    '    "recipe": "<string>",',
+    '    "ingredients": [{ "quantity": "<string>", "name": "<string>" }],',
+    '    "nutrition": { "calories": <int>, "protein": <int>, "carbs": <int>, "fat": <int>, "fibre": <int> }',
+    '  }',
+  ].join('\n')
+
   const slotLines = slotsWithKcal
-    .map(s => `      "${s.key}": ${mealEntry}  // ${s.label} (~${s.targetKcal} kcal)`)
+    .map(s => `      "${s.key}": ${mealEntry}  // ${s.label} — target ~${s.targetKcal} kcal`)
     .join(',\n')
 
-  // Per-slot breakdown shown to the AI so it calibrates portion sizes
   const slotTargetLines = slotsWithKcal
     .map(s => `  - ${s.label} (${s.time}): ~${s.targetKcal} kcal`)
     .join('\n')
@@ -131,9 +139,9 @@ function buildPrompt(profile, options = {}) {
 - Weight: ${profile.weight ? profile.weight + ' kg' : 'unknown'}
 - Exercise frequency: ${profile.exerciseFrequency || 'moderately active'}
 - Allergies/restrictions: ${profile.allergies || 'none'}
-- Daily calorie target: ${targets.maintenanceCalories} kcal (protein ${targets.proteinG}g, carbs ${targets.carbsG}g, fat ${targets.fatG}g)
+- Daily calorie target: ${targets.maintenanceCalories} kcal  (protein ${targets.proteinG}g · carbs ${targets.carbsG}g · fat ${targets.fatG}g)
 
-Per-meal calorie targets (adjust ingredient quantities to hit these):
+Per-meal calorie targets — size ingredients to hit these:
 ${slotTargetLines}
 ${alternate && currentPlan ? '\nProvide DIFFERENT meals from the current plan.' : ''}
 ${userPrompt ? `\nExtra instruction: ${userPrompt}` : ''}
@@ -157,7 +165,8 @@ ${slotLines}
 Rules:
 - All 7 days required
 - Only include the exact meal keys listed above — do not add or rename keys
-- Match ingredient quantities so each meal hits its kcal target (±10%)
+- nutrition.calories must be within ±10% of the slot's target kcal
+- nutrition values are integers (kcal, grams)
 - Respect every allergy/restriction
 - Vary meals — no repeats in first 3 days
 - Quantities specific (60g, 1 cup, 2 tbsp)
