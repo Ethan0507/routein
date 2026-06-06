@@ -6,19 +6,9 @@ import {
   getMealLogsForDate, upsertMealLog, deleteMealLog,
   getActiveMealPlan, getProfile, upsertProfile,
 } from '../lib/db'
-import { analyzeLoggedMealDescription, OPTIONAL_SLOTS } from '../lib/mealRecommendation'
+import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
 import { useAuth } from '../contexts/AuthContext'
-import { todayStr, formatTime, nowHHmm, lastNDays, shortDate, getDayIndexForPlan, MEAL_SLOTS } from '../lib/utils'
-
-const SLOT_LABELS = {
-  breakfast:   'Breakfast',
-  midMorning:  'Mid-morning',
-  lunch:       'Lunch',
-  preWorkout:  'Pre-workout',
-  postWorkout: 'Post-workout',
-  dinner:      'Dinner',
-  beforeBed:   'Before bed',
-}
+import { todayStr, formatTime, nowHHmm, lastNDays, shortDate, getDayIndexForPlan, DEFAULT_MEAL_SLOTS, normalizeMealSlots, getActiveSlots } from '../lib/utils'
 
 const MEAL_TYPES = ['Breakfast', 'Mid-morning', 'Lunch', 'Pre-workout', 'Post-workout', 'Dinner', 'Before bed', 'Snack', 'Other']
 
@@ -34,11 +24,12 @@ export default function DietScreen() {
   const [plan, setPlan]             = useState(null)   // active meal plan row
   const [dayMeals, setDayMeals]     = useState(null)   // today's meal objects from plan
   const [targets, setTargets]       = useState(null)   // { maintenanceCalories, proteinG, carbsG, fatG }
-  const [mealLogs, setMealLogs]     = useState({})     // { slot: log }
-  const [enabledSlots, setEnabledSlots] = useState(null) // null = all; array = filtered
+  const [mealLogs, setMealLogs]         = useState({})
+  // All slot objects (with enabled flags) from the user's profile
+  const [allSlots, setAllSlots]         = useState(DEFAULT_MEAL_SLOTS)
   const [slotsModalOpen, setSlotsModalOpen] = useState(false)
-  const [slotsDraft, setSlotsDraft]     = useState([])
-  const [slotsSaving, setSlotsSaving]   = useState(false)
+  const [slotsDraft, setSlotsDraft]         = useState([])
+  const [slotsSaving, setSlotsSaving]       = useState(false)
 
   // Free-form entries
   const [entries, setEntries]   = useState([])
@@ -82,8 +73,7 @@ export default function DietScreen() {
         setTargets(activePlan.targets || null)
       }
 
-      const slots = profile?.meal_slots || null
-      setEnabledSlots(slots)
+      setAllSlots(normalizeMealSlots(profile?.meal_slots))
 
       setMealLogs(todayLogs)
       setEntries(todayEntries)
@@ -100,7 +90,7 @@ export default function DietScreen() {
     setSlotsSaving(true)
     try {
       await upsertProfile(user.id, { meal_slots: slotsDraft })
-      setEnabledSlots(slotsDraft)
+      setAllSlots(slotsDraft)
       setSlotsModalOpen(false)
     } finally {
       setSlotsSaving(false)
@@ -108,7 +98,7 @@ export default function DietScreen() {
   }
 
   function openSlotsModal() {
-    setSlotsDraft(enabledSlots ?? OPTIONAL_SLOTS)
+    setSlotsDraft(allSlots.map(s => ({ ...s })))
     setSlotsModalOpen(true)
   }
 
@@ -157,7 +147,8 @@ export default function DietScreen() {
   // ── Log a custom override for a planned slot ─────────────────────────────────
   function openCustomModal(slot) {
     const meal = dayMeals?.[slot]
-    setCustomModal({ slot, mealName: meal?.name || SLOT_LABELS[slot] })
+    const slotLabel = allSlots.find(s => s.key === slot)?.label || slot
+    setCustomModal({ slot, mealName: meal?.name || slotLabel })
     setCustomDesc('')
     setCustomError('')
   }
@@ -294,11 +285,8 @@ export default function DietScreen() {
                   </button>
                 </div>
                 <div className="space-y-2">
-                  {MEAL_SLOTS.filter(slot =>
-                    ['breakfast','lunch','dinner'].includes(slot) ||
-                    !enabledSlots ||
-                    enabledSlots.includes(slot)
-                  ).map(slot => {
+                  {getActiveSlots(allSlots).map(slotObj => {
+                    const slot    = slotObj.key
                     const meal    = dayMeals[slot]
                     if (!meal) return null
                     const log     = mealLogs[slot]
@@ -310,7 +298,6 @@ export default function DietScreen() {
                     return (
                       <div key={slot} className={`bg-white rounded-xl border overflow-hidden transition-colors ${isLogged ? 'border-teal-200 bg-teal-50/30' : 'border-border'}`}>
                         <div className="flex items-center gap-3 px-3 py-3">
-                          {/* Check button */}
                           <button
                             onClick={() => isLogged ? unlogMeal(slot) : logPlannedMeal(slot)}
                             disabled={isLogging || isUnlogging}
@@ -323,9 +310,8 @@ export default function DietScreen() {
                                 : <Circle size={20} className="text-border" />}
                           </button>
 
-                          {/* Meal info */}
                           <div className="flex-1 min-w-0">
-                            <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wide">{SLOT_LABELS[slot]}</p>
+                            <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wide">{slotObj.label}</p>
                             <p className={`text-sm font-medium mt-0.5 truncate ${isLogged ? 'text-teal-700' : 'text-textPrimary'}`}>
                               {log?.custom_description ? log.custom_description : meal.name}
                             </p>
@@ -417,7 +403,7 @@ export default function DietScreen() {
       </div>
 
       {/* Custom override modal */}
-      <Modal open={!!customModal} onClose={() => setCustomModal(null)} title={customModal ? `Log ${SLOT_LABELS[customModal.slot]}` : ''}>
+      <Modal open={!!customModal} onClose={() => setCustomModal(null)} title={customModal ? `Log ${allSlots.find(s => s.key === customModal.slot)?.label || customModal.slot}` : ''}>
         <div className="space-y-3">
           <p className="text-xs text-textSecondary">
             Planned: <span className="font-medium text-textPrimary">{customModal?.mealName}</span>
@@ -516,40 +502,34 @@ export default function DietScreen() {
       {/* Edit meal slots modal */}
       <Modal open={slotsModalOpen} onClose={() => setSlotsModalOpen(false)} title="Meal slots">
         <div className="space-y-3">
-          <p className="text-xs text-textSecondary">Breakfast, Lunch &amp; Dinner are always included.</p>
-          <div className="space-y-2">
-            {OPTIONAL_SLOTS.map(slot => {
-              const labels = {
-                midMorning:  { label: 'Mid-morning snack', desc: 'Light bite between breakfast & lunch' },
-                preWorkout:  { label: 'Pre-workout',        desc: 'Quick fuel before training' },
-                postWorkout: { label: 'Post-workout',       desc: 'Recovery meal after training' },
-                beforeBed:   { label: 'Before bed',         desc: 'Slow-digesting protein snack' },
-              }
-              const { label, desc } = labels[slot]
-              const on = slotsDraft.includes(slot)
-              return (
+          <p className="text-xs text-textSecondary">Rename, reorder by time, or remove any slot. Changes here only affect display — to regenerate the plan with new slots, use the onboarding flow.</p>
+          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
+            {[...slotsDraft].sort((a, b) => a.time.localeCompare(b.time)).map(slot => (
+              <div key={slot.key} className="flex items-center gap-2 bg-white rounded-xl border border-border p-2">
+                <div className="flex-1 grid grid-cols-[1fr_80px] gap-1.5">
+                  <input
+                    className="border border-border rounded-lg px-2.5 py-1.5 text-sm text-textPrimary focus:outline-none focus:border-teal-500"
+                    value={slot.label}
+                    onChange={e => setSlotsDraft(d => d.map(s => s.key === slot.key ? { ...s, label: e.target.value } : s))}
+                    placeholder="Meal name"
+                  />
+                  <input
+                    type="time"
+                    className="border border-border rounded-lg px-2 py-1.5 text-xs text-textPrimary focus:outline-none focus:border-teal-500"
+                    value={slot.time}
+                    onChange={e => setSlotsDraft(d => d.map(s => s.key === slot.key ? { ...s, time: e.target.value } : s))}
+                  />
+                </div>
                 <button
-                  key={slot}
                   type="button"
-                  onClick={() => setSlotsDraft(d => on ? d.filter(s => s !== slot) : [...d, slot])}
-                  className={`w-full text-left flex items-center gap-3 px-3 py-2.5 rounded-xl border text-sm transition-colors ${
-                    on ? 'border-teal-500 bg-teal-50' : 'border-border bg-white'
-                  }`}
+                  onClick={() => setSlotsDraft(d => d.filter(s => s.key !== slot.key))}
+                  className="shrink-0 p-1.5 text-textSecondary hover:text-red-500 rounded-lg hover:bg-red-50"
                 >
-                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${
-                    on ? 'border-teal-500 bg-teal-500' : 'border-border bg-white'
-                  }`}>
-                    {on && <div className="w-2 h-2 rounded-full bg-white" />}
-                  </div>
-                  <div className="flex-1">
-                    <p className={`font-medium text-sm ${on ? 'text-teal-700' : 'text-textPrimary'}`}>{label}</p>
-                    <p className="text-xs text-textSecondary">{desc}</p>
-                  </div>
+                  <Trash2 size={14} />
                 </button>
-              )
-            })}
+              </div>
+            ))}
           </div>
-          <p className="text-[11px] text-textSecondary">Changes apply to how your plan is displayed. To regenerate the plan with different slots, go to your profile.</p>
           <button
             onClick={saveSlots}
             disabled={slotsSaving}

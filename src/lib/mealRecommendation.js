@@ -1,3 +1,5 @@
+import { DEFAULT_MEAL_SLOTS, getActiveSlots } from './utils'
+
 const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY
 const MODEL = 'gpt-4o-mini'
 
@@ -74,23 +76,19 @@ function buildFallbackPlan(profile) {
 
 // ── OpenAI plan generation ────────────────────────────────────────────────────
 
-const REQUIRED_SLOTS  = ['breakfast', 'lunch', 'dinner']
-const OPTIONAL_SLOTS  = ['midMorning', 'preWorkout', 'postWorkout', 'beforeBed']
-const ALL_SLOTS       = [...REQUIRED_SLOTS, 'midMorning', 'preWorkout', 'postWorkout', 'beforeBed']
-
-// Canonical order for display/prompt
-const SLOT_ORDER = ['breakfast', 'midMorning', 'lunch', 'preWorkout', 'postWorkout', 'dinner', 'beforeBed']
+const REQUIRED_SLOTS = ['breakfast', 'lunch', 'dinner']
+const OPTIONAL_SLOTS = ['midMorning', 'preWorkout', 'postWorkout', 'beforeBed']
 
 function buildPrompt(profile, options = {}) {
-  const { userPrompt, currentPlan, alternate, enabledSlots } = options
+  const { userPrompt, currentPlan, alternate, slots } = options
 
-  // Slots to include: always required + whichever optional ones are enabled
-  const slots = SLOT_ORDER.filter(s =>
-    REQUIRED_SLOTS.includes(s) || (enabledSlots ? enabledSlots.includes(s) : true)
-  )
+  // Use passed slot objects; fall back to defaults
+  const activeSlots = getActiveSlots(slots || DEFAULT_MEAL_SLOTS)
+  const slotCount   = activeSlots.length
 
   const mealEntry = '{ "name": "<string>", "recipe": "<string>", "ingredients": [{ "quantity": "<string>", "name": "<string>" }] }'
-  const slotLines = slots.map(s => `      "${s}": ${mealEntry}`).join(',\n')
+  // Include label as a comment so the AI understands the meal context
+  const slotLines = activeSlots.map(s => `      "${s.key}": ${mealEntry}  // ${s.label}`).join(',\n')
 
   const base = `Create a personalized 7-day meal plan for:
 - Age: ${profile.age || 'unknown'}
@@ -99,6 +97,7 @@ function buildPrompt(profile, options = {}) {
 - Weight: ${profile.weight ? profile.weight + ' kg' : 'unknown'}
 - Exercise frequency: ${profile.exerciseFrequency || 'moderately active'}
 - Allergies/restrictions: ${profile.allergies || 'none'}
+- Meals per day: ${slotCount} (distribute daily calories evenly across all ${slotCount} meals)
 ${alternate && currentPlan ? '\nProvide DIFFERENT meals from the current plan.' : ''}
 ${userPrompt ? `\nExtra instruction: ${userPrompt}` : ''}
 
@@ -120,7 +119,8 @@ ${slotLines}
 
 Rules:
 - All 7 days required
-- Only include the meal keys listed above — do not add extras
+- Only include the exact meal keys listed above — do not add or rename keys
+- Calories distributed proportionally: larger meals (lunch, dinner) get more, snacks get less
 - Respect every allergy/restriction
 - Vary meals — no repeats in first 3 days
 - Quantities specific (60g, 1 cup, 2 tbsp)

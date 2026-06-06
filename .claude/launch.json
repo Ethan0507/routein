@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "nutrition-tracker",
+      "runtimeExecutable": "C:\\Users\\ethan\\Desktop\\My apps\\nutrition-tracker-web\\routein\\.claude\\start-dev.bat",
+      "runtimeArgs": [],
+      "port": 5174
+    }
+  ]
+}

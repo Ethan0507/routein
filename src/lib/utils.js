@@ -51,6 +51,40 @@ export function shortDate(dateStr) {
 
 export const MEAL_SLOTS = ['breakfast', 'midMorning', 'lunch', 'preWorkout', 'postWorkout', 'dinner', 'beforeBed']
 
+// Rich slot objects — the canonical default set
+export const DEFAULT_MEAL_SLOTS = [
+  { key: 'breakfast',   label: 'Breakfast',         time: '07:45', required: true,  enabled: true  },
+  { key: 'midMorning',  label: 'Mid-morning snack', time: '10:00', required: false, enabled: true  },
+  { key: 'lunch',       label: 'Lunch',             time: '13:00', required: true,  enabled: true  },
+  { key: 'preWorkout',  label: 'Pre-workout',        time: '17:00', required: false, enabled: true  },
+  { key: 'postWorkout', label: 'Post-workout',       time: '18:30', required: false, enabled: true  },
+  { key: 'dinner',      label: 'Dinner',             time: '20:00', required: true,  enabled: true  },
+  { key: 'beforeBed',   label: 'Before bed',         time: '22:00', required: false, enabled: true  },
+]
+
+/** Returns all slots sorted by time. All slots in the array are considered active. */
+export function getActiveSlots(slots) {
+  const src = slots || DEFAULT_MEAL_SLOTS
+  return [...src].sort((a, b) => a.time.localeCompare(b.time))
+}
+
+/**
+ * Normalises whatever is stored in profiles.meal_slots.
+ * Old format was an array of key-strings or objects with an enabled flag.
+ * New format is a plain array of { key, label, time } objects.
+ */
+export function normalizeMealSlots(raw) {
+  if (!raw || raw.length === 0) return DEFAULT_MEAL_SLOTS.map(s => ({ key: s.key, label: s.label, time: s.time }))
+  if (typeof raw[0] === 'string') {
+    // Legacy: array of key strings — map to only those preset slots
+    return DEFAULT_MEAL_SLOTS
+      .filter(s => raw.includes(s.key))
+      .map(s => ({ key: s.key, label: s.label, time: s.time }))
+  }
+  // Object format: strip internal flags, keep key/label/time
+  return raw.map(s => ({ key: s.key, label: s.label, time: s.time, ...(s.custom ? { custom: true } : {}) }))
+}
+
 export const CATEGORIES = [
   'Produce', 'Protein', 'Dairy', 'Grains', 'Snacks',
   'Drinks', 'Condiments', 'Frozen', 'Other',

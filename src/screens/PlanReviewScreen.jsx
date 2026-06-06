@@ -2,30 +2,18 @@ import { useState } from 'react'
 import { ChevronDown, ChevronUp, Edit3, RefreshCw, Check, Loader2, Trash2, Plus } from 'lucide-react'
 import Modal from '../components/Modal'
 import { saveMealPlan, upsertProfile } from '../lib/db'
-import { generateMealPlanWithLLM, MEAL_SLOTS } from '../lib/mealRecommendation'
+import { generateMealPlanWithLLM } from '../lib/mealRecommendation'
 import { useAuth } from '../contexts/AuthContext'
-
-const SLOT_LABELS = {
-  breakfast:   'Breakfast',
-  midMorning:  'Mid-morning',
-  lunch:       'Lunch',
-  preWorkout:  'Pre-workout',
-  postWorkout: 'Post-workout',
-  dinner:      'Dinner',
-  beforeBed:   'Before bed',
-}
+import { normalizeMealSlots, getActiveSlots } from '../lib/utils'
 
 export default function PlanReviewScreen({ planData, onAccepted }) {
   const { user } = useAuth()
   const [plan, setPlan]         = useState(planData.plan)
   const [targets]               = useState(planData.targets)
   const [profile]               = useState(planData.profile || {})
-  // Slots to show: always required ones + enabled optional ones
-  const visibleSlots = MEAL_SLOTS.filter(slot =>
-    ['breakfast','lunch','dinner'].includes(slot) ||
-    !profile.enabledSlots ||
-    profile.enabledSlots.includes(slot)
-  )
+  // Slots to display, derived from the profile's slot objects
+  const allSlots    = normalizeMealSlots(profile.slots || profile.meal_slots || null)
+  const visibleSlots = getActiveSlots(allSlots)
   const [selectedDay, setSelectedDay] = useState(0)
   const [editModal, setEditModal]     = useState(null)  // { dayIdx, slot, meal }
   const [regenDay, setRegenDay]       = useState(null)  // dayIdx being regenerated
@@ -92,7 +80,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
         alternate:    true,
         currentPlan:  plan,
         userPrompt:   promptText.trim() || undefined,
-        enabledSlots: profile.enabledSlots || undefined,
+        slots: allSlots,
       })
       const newDay = result.plan[dayIdx] || result.plan[0]
       setPlan(prev => prev.map((d, i) => i === dayIdx ? { ...newDay, day: i + 1 } : d))
@@ -178,15 +166,16 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
           </button>
         </div>
 
-        {visibleSlots.map(slot => {
-          const meal = dayData?.[slot]
+        {visibleSlots.map(slotObj => {
+          const meal = dayData?.[slotObj.key]
           if (!meal) return null
           return (
             <MealCard
-              key={slot}
-              slot={slot}
+              key={slotObj.key}
+              slot={slotObj.key}
+              slotLabel={slotObj.label}
               meal={meal}
-              onEdit={() => openEdit(selectedDay, slot)}
+              onEdit={() => openEdit(selectedDay, slotObj.key)}
             />
           )
         })}
@@ -230,7 +219,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
       </Modal>
 
       {/* Edit meal modal */}
-      <Modal open={!!editModal} onClose={() => setEditModal(null)} title={editModal ? `Edit — ${SLOT_LABELS[editModal.slot]}` : ''}>
+      <Modal open={!!editModal} onClose={() => setEditModal(null)} title={editModal ? `Edit — ${allSlots.find(s => s.key === editModal.slot)?.label || editModal.slot}` : ''}>
         <div className="space-y-3 max-h-[60vh] overflow-y-auto">
           <div>
             <label className="text-xs font-medium text-textSecondary block mb-1">Meal name</label>
@@ -290,13 +279,13 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
   )
 }
 
-function MealCard({ slot, meal, onEdit }) {
+function MealCard({ slot, slotLabel, meal, onEdit }) {
   const [expanded, setExpanded] = useState(false)
   return (
     <div className="bg-white rounded-xl border border-border overflow-hidden">
       <button className="w-full flex items-center justify-between px-4 py-3 text-left" onClick={() => setExpanded(e => !e)}>
         <div className="flex-1 min-w-0">
-          <p className="text-[11px] font-semibold text-textSecondary uppercase tracking-wide">{SLOT_LABELS[slot]}</p>
+          <p className="text-[11px] font-semibold text-textSecondary uppercase tracking-wide">{slotLabel}</p>
           <p className="text-sm font-semibold text-textPrimary mt-0.5 truncate">{meal.name}</p>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-2">
