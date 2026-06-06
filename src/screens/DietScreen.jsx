@@ -5,7 +5,7 @@ import WeekPlanViewer from '../components/WeekPlanViewer'
 import {
   getDietEntriesForDate, getDietEntriesForRange, addDietEntry, deleteDietEntry,
   getMealLogsForDate, upsertMealLog, deleteMealLog,
-  getActiveMealPlan, getProfile, upsertProfile,
+  getActiveMealPlan, getProfile, upsertProfile, updateMealPlan,
 } from '../lib/db'
 import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
 import { useAuth } from '../contexts/AuthContext'
@@ -27,6 +27,7 @@ export default function DietScreen() {
   const [targets, setTargets]       = useState(null)   // { maintenanceCalories, proteinG, carbsG, fatG }
   const [mealLogs, setMealLogs]         = useState({})
   const [weekPlanOpen, setWeekPlanOpen] = useState(false)
+  const [userProfile, setUserProfile]   = useState(null)
   // All slot objects (with enabled flags) from the user's profile
   const [allSlots, setAllSlots]         = useState(DEFAULT_MEAL_SLOTS)
   const [slotsModalOpen, setSlotsModalOpen] = useState(false)
@@ -76,6 +77,7 @@ export default function DietScreen() {
       }
 
       setAllSlots(normalizeMealSlots(profile?.meal_slots))
+      setUserProfile(profile)
 
       setMealLogs(todayLogs)
       setEntries(todayEntries)
@@ -561,10 +563,18 @@ export default function DietScreen() {
       {weekPlanOpen && (
         <WeekPlanViewer
           plan={plan?.plan}
+          planId={plan?.id}
           targets={targets}
           mealSlots={allSlots}
           planCreatedAt={plan?.created_at}
+          profile={userProfile}
           onClose={() => setWeekPlanOpen(false)}
+          onPlanUpdate={updatedPlan => {
+            // Reflect edits in today's diet view without a full reload
+            setPlan(prev => ({ ...prev, plan: updatedPlan }))
+            const dayIdx = getDayIndexForPlan(plan?.created_at)
+            setDayMeals(updatedPlan[dayIdx] || updatedPlan[0] || null)
+          }}
         />
       )}
     </div>

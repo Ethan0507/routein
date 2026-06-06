@@ -218,6 +218,14 @@ export async function deleteMealLog(userId, dateStr, mealSlot) {
 
 // ── Meal plans ────────────────────────────────────────────────────────────────
 
+export async function updateMealPlan(planId, { plan, targets, source }) {
+  const { error } = await supabase
+    .from('meal_plans')
+    .update({ plan, targets, source, updated_at: new Date().toISOString() })
+    .eq('id', planId)
+  assertNoError(error, 'updateMealPlan')
+}
+
 export async function saveMealPlan(userId, { plan, targets, source }) {
   const { error } = await supabase
     .from('meal_plans')
