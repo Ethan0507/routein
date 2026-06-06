@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, ChevronDown, ChevronUp, Loader2, CheckCircle2, Circle, Pencil } from 'lucide-react'
+import { Plus, Trash2, ChevronDown, ChevronUp, Loader2, CheckCircle2, Circle, Pencil, CalendarDays } from 'lucide-react'
 import Modal from '../components/Modal'
+import WeekPlanViewer from '../components/WeekPlanViewer'
 import {
   getDietEntriesForDate, getDietEntriesForRange, addDietEntry, deleteDietEntry,
   getMealLogsForDate, upsertMealLog, deleteMealLog,
@@ -25,6 +26,7 @@ export default function DietScreen() {
   const [dayMeals, setDayMeals]     = useState(null)   // today's meal objects from plan
   const [targets, setTargets]       = useState(null)   // { maintenanceCalories, proteinG, carbsG, fatG }
   const [mealLogs, setMealLogs]         = useState({})
+  const [weekPlanOpen, setWeekPlanOpen] = useState(false)
   // All slot objects (with enabled flags) from the user's profile
   const [allSlots, setAllSlots]         = useState(DEFAULT_MEAL_SLOTS)
   const [slotsModalOpen, setSlotsModalOpen] = useState(false)
@@ -237,10 +239,23 @@ export default function DietScreen() {
     <div className="flex flex-col min-h-full">
       {/* Header */}
       <div className="bg-white border-b border-border px-4 pt-10 pb-4">
-        <h1 className="text-xl font-bold text-textPrimary">Diet Tracker</h1>
-        <p className="text-sm text-textSecondary mt-0.5">
-          {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
-        </p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-bold text-textPrimary">Diet Tracker</h1>
+            <p className="text-sm text-textSecondary mt-0.5">
+              {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+            </p>
+          </div>
+          {plan && (
+            <button
+              onClick={() => setWeekPlanOpen(true)}
+              className="flex items-center gap-1.5 text-xs font-medium text-teal-600 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg active:bg-teal-100"
+            >
+              <CalendarDays size={13} />
+              Week plan
+            </button>
+          )}
+        </div>
 
         {/* Macro progress vs targets */}
         {targets && (
@@ -541,6 +556,17 @@ export default function DietScreen() {
           </button>
         </div>
       </Modal>
+
+      {/* Week plan full-screen viewer */}
+      {weekPlanOpen && (
+        <WeekPlanViewer
+          plan={plan?.plan}
+          targets={targets}
+          mealSlots={allSlots}
+          planCreatedAt={plan?.created_at}
+          onClose={() => setWeekPlanOpen(false)}
+        />
+      )}
     </div>
   )
 }
