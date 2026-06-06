@@ -3,7 +3,7 @@ import { X, ChevronDown, ChevronUp, Edit3, RefreshCw, Loader2, Plus, Trash2, Spa
 import Modal from './Modal'
 import { getActiveSlots, normalizeMealSlots } from '../lib/utils'
 import { generateMealPlanWithLLM } from '../lib/mealRecommendation'
-import { updateMealPlan } from '../lib/db'
+import { updateMealPlan, saveMealPlan, updatePlanMeta } from '../lib/db'
 
 function sumNutrition(meals, slots) {
   let cal = 0, pro = 0, carb = 0, fat = 0
@@ -19,13 +19,46 @@ function sumNutrition(meals, slots) {
 }
 
 export default function WeekPlanViewer({
-  plan: initialPlan, planId, targets, mealSlots, planCreatedAt,
-  profile, onClose, onPlanUpdate,
+  plan: initialPlan, planId: initialPlanId, targets,
+  planName: initialName = '', planTags: initialTags = [],
+  mealSlots, planCreatedAt,
+  profile, userId, onClose, onPlanUpdate, onNewPlanCreated,
+  mode = 'edit', onRestore,
 }) {
-  const [plan, setPlan]           = useState(initialPlan || [])
+  const [plan, setPlan]             = useState(initialPlan || [])
+  const [planId, setPlanId]         = useState(initialPlanId)
   const [selectedDay, setSelectedDay] = useState(0)
-  const [saving, setSaving]       = useState(false)
-  const [error, setError]         = useState('')
+  const [saving, setSaving]         = useState(false)
+  const [error, setError]           = useState('')
+  const isReadOnly = mode === 'history'
+
+  // ── Plan name + tags ─────────────────────────────────────────────────────────
+  const [planName, setPlanName]     = useState(initialName)
+  const [planTags, setPlanTags]     = useState(initialTags || [])
+  const [editingName, setEditingName] = useState(false)
+  const [nameInput, setNameInput]   = useState(initialName)
+  const [tagInput, setTagInput]     = useState('')
+
+  async function saveName() {
+    setEditingName(false)
+    const trimmed = nameInput.trim()
+    setPlanName(trimmed)
+    if (planId) await updatePlanMeta(planId, { name: trimmed || null, tags: planTags }).catch(() => {})
+  }
+
+  async function addTag(tag) {
+    const t = tag.trim().toLowerCase()
+    if (!t || planTags.includes(t)) return
+    const next = [...planTags, t]
+    setPlanTags(next)
+    if (planId) await updatePlanMeta(planId, { name: planName || null, tags: next }).catch(() => {})
+  }
+
+  async function removeTag(tag) {
+    const next = planTags.filter(t => t !== tag)
+    setPlanTags(next)
+    if (planId) await updatePlanMeta(planId, { name: planName || null, tags: next }).catch(() => {})
+  }
 
   // ── Edit meal modal ──────────────────────────────────────────────────────────
   const [editModal, setEditModal]           = useState(null) // { dayIdx, slotKey }
@@ -35,22 +68,43 @@ export default function WeekPlanViewer({
   const [editNutrition, setEditNutrition]   = useState({ calories: '', protein: '', carbs: '', fat: '', fibre: '' })
 
   // ── Regen modal (day or full plan) ───────────────────────────────────────────
-  const [regenModal, setRegenModal] = useState(null) // 'day' | 'plan'
+  const [regenModal, setRegenModal]   = useState(null) // 'day' | 'plan'
   const [regenPrompt, setRegenPrompt] = useState('')
   const [regening, setRegening]       = useState(false)
+  // After AI returns: pending result waiting for user review
+  const [pendingResult, setPendingResult] = useState(null) // { newPlan, newTargets, kind }
+  // diffItems: [{ dayIdx, slotKey, slotLabel, dayLabel, oldName, newMeal, accepted }]
+  const [diffItems, setDiffItems]     = useState([])
 
   const slots    = getActiveSlots(normalizeMealSlots(mealSlots))
   const dayData  = plan[selectedDay] || {}
   const dayTotals = sumNutrition(dayData, slots)
 
-  // ── Save helper ──────────────────────────────────────────────────────────────
-  async function persistPlan(updated) {
+  // ── Save helpers ─────────────────────────────────────────────────────────────
+  // Update the current plan row (meal edits, single-day regen)
+  async function persistEdit(updated) {
     setPlan(updated)
     onPlanUpdate?.(updated)
     if (!planId) return
     setSaving(true)
     try {
       await updateMealPlan(planId, { plan: updated, targets, source: 'edited' })
+    } catch (e) {
+      setError(`Save failed: ${e.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Insert a brand-new plan row (full regen → new history entry)
+  async function persistNewPlan(updated, newTargets) {
+    if (!userId) return
+    setSaving(true)
+    try {
+      const row = await saveMealPlan(userId, { plan: updated, targets: newTargets || targets, source: 'regenerated' })
+      setPlan(updated)
+      setPlanId(row?.id)
+      onNewPlanCreated?.({ id: row?.id, created_at: row?.created_at, plan: updated, targets: newTargets || targets })
     } catch (e) {
       setError(`Save failed: ${e.message}`)
     } finally {
@@ -97,12 +151,13 @@ export default function WeekPlanViewer({
       }
     })
     setEditModal(null)
-    await persistPlan(updated)
+    await persistEdit(updated)
   }
 
   // ── Regenerate ───────────────────────────────────────────────────────────────
   async function confirmRegen() {
     if (!profile) return
+    const kind = regenModal  // capture before closing
     setRegening(true)
     setError('')
     try {
@@ -115,27 +170,82 @@ export default function WeekPlanViewer({
         allergies:         profile.allergies,
       }
       const result = await generateMealPlanWithLLM(profileForAI, {
-        slots:      slots,
-        alternate:  true,
+        slots:       slots,
+        alternate:   true,
         currentPlan: plan,
-        userPrompt: regenPrompt.trim() || undefined,
+        userPrompt:  regenPrompt.trim() || undefined,
       })
 
-      let updated
-      if (regenModal === 'day') {
-        const newDay = result.plan[selectedDay] || result.plan[0]
-        updated = plan.map((d, i) => i === selectedDay ? { ...newDay, day: i + 1 } : d)
-      } else {
-        updated = result.plan
-      }
       setRegenModal(null)
       setRegenPrompt('')
-      await persistPlan(updated)
+
+      // Build the proposed plan (not yet applied)
+      let proposedPlan
+      if (kind === 'day') {
+        const newDay = result.plan[selectedDay] || result.plan[0]
+        proposedPlan = plan.map((d, i) => i === selectedDay ? { ...newDay, day: i + 1 } : d)
+      } else {
+        proposedPlan = result.plan
+      }
+
+      // Compute diff — only meals whose name actually changed
+      const baseDate = new Date(planCreatedAt || Date.now())
+      const items = []
+      proposedPlan.forEach((newDay, di) => {
+        const dayDate = new Date(baseDate.getTime() + di * 86400000)
+        const dayLbl  = dayDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        slots.forEach(slot => {
+          const oldName = plan[di]?.[slot.key]?.name
+          const newMeal = newDay[slot.key]
+          if (newMeal && oldName !== newMeal.name) {
+            items.push({ dayIdx: di, slotKey: slot.key, slotLabel: slot.label, dayLabel: dayLbl, oldName: oldName || '—', newMeal, accepted: true })
+          }
+        })
+      })
+
+      if (items.length === 0) {
+        // Nothing changed (shouldn't happen often) — save immediately
+        if (kind === 'day') await persistEdit(proposedPlan)
+        else                await persistNewPlan(proposedPlan, result.targets)
+      } else {
+        setDiffItems(items)
+        setPendingResult({ proposedPlan, newTargets: result.targets, kind })
+      }
     } catch (e) {
       setError(`Regeneration failed: ${e.message}`)
     } finally {
       setRegening(false)
     }
+  }
+
+  // ── Apply diff ───────────────────────────────────────────────────────────────
+  async function applyDiff() {
+    if (!pendingResult) return
+    const { proposedPlan, newTargets, kind } = pendingResult
+    const accepted = diffItems.filter(d => d.accepted)
+
+    // Start from the current plan; overlay accepted changes
+    const merged = plan.map((day, di) => {
+      const acceptedForDay = accepted.filter(d => d.dayIdx === di)
+      if (acceptedForDay.length === 0) return day
+      const patched = { ...day }
+      acceptedForDay.forEach(d => { patched[d.slotKey] = d.newMeal })
+      return patched
+    })
+
+    setDiffItems([])
+    setPendingResult(null)
+
+    if (kind === 'day') {
+      await persistEdit(merged)
+    } else {
+      await persistNewPlan(merged, newTargets)
+    }
+  }
+
+  function discardDiff() {
+    setDiffItems([])
+    setPendingResult(null)
   }
 
   if (!plan.length) return null
@@ -145,22 +255,77 @@ export default function WeekPlanViewer({
       {/* Header */}
       <div className="bg-white border-b border-border px-4 pt-10 pb-3">
         <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-lg font-bold text-textPrimary">Week Plan</h2>
+          <div className="flex-1 min-w-0 mr-2">
+            {/* Editable plan name */}
+            {!isReadOnly && editingName ? (
+              <input
+                className="text-lg font-bold text-textPrimary border-b-2 border-teal-500 outline-none bg-transparent w-full"
+                value={nameInput}
+                onChange={e => setNameInput(e.target.value)}
+                onBlur={saveName}
+                onKeyDown={e => { if (e.key === 'Enter') saveName() }}
+                autoFocus
+                maxLength={60}
+                placeholder="Plan name…"
+              />
+            ) : (
+              <div
+                className={`flex items-center gap-1.5 ${!isReadOnly ? 'cursor-pointer group' : ''}`}
+                onClick={() => { if (!isReadOnly) { setNameInput(planName); setEditingName(true) } }}
+              >
+                <h2 className="text-lg font-bold text-textPrimary truncate">
+                  {planName || 'Week Plan'}
+                </h2>
+                {!isReadOnly && (
+                  <span className="text-textSecondary opacity-0 group-hover:opacity-100 transition-opacity">
+                    <Edit3 size={13} />
+                  </span>
+                )}
+              </div>
+            )}
+
             {targets && (
               <p className="text-xs text-textSecondary mt-0.5">
                 Target {targets.maintenanceCalories} kcal · {targets.proteinG}g P · {targets.carbsG}g C · {targets.fatG}g F
               </p>
             )}
+
+            {/* Tag chips */}
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {planTags.map(tag => (
+                <span
+                  key={tag}
+                  className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 border border-teal-200"
+                >
+                  {tag}
+                  {!isReadOnly && (
+                    <button onClick={() => removeTag(tag)} className="hover:text-red-500 leading-none">&times;</button>
+                  )}
+                </span>
+              ))}
+              {!isReadOnly && (
+                <form onSubmit={e => { e.preventDefault(); addTag(tagInput); setTagInput('') }}>
+                  <input
+                    className="text-[11px] font-medium px-2 py-0.5 rounded-full border border-dashed border-border text-textSecondary bg-transparent focus:outline-none focus:border-teal-400 w-20"
+                    placeholder="+ tag"
+                    value={tagInput}
+                    onChange={e => setTagInput(e.target.value)}
+                    onBlur={() => { if (tagInput.trim()) { addTag(tagInput); setTagInput('') } }}
+                  />
+                </form>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2">
             {saving && <Loader2 size={14} className="text-teal-500 animate-spin" />}
-            <button
-              onClick={() => { setRegenPrompt(''); setRegenModal('plan') }}
-              className="flex items-center gap-1 text-xs text-textSecondary border border-border rounded-lg px-2.5 py-1.5 active:bg-bg"
-            >
-              <Sparkles size={12} /> Regenerate plan
-            </button>
+            {!isReadOnly && (
+              <button
+                onClick={() => { setRegenPrompt(''); setRegenModal('plan') }}
+                className="flex items-center gap-1 text-xs text-textSecondary border border-border rounded-lg px-2.5 py-1.5 active:bg-bg"
+              >
+                <Sparkles size={12} /> Regenerate plan
+              </button>
+            )}
             <button onClick={onClose} className="p-1.5 text-textSecondary active:bg-bg rounded-lg">
               <X size={20} />
             </button>
@@ -216,12 +381,14 @@ export default function WeekPlanViewer({
           </div>
         ) : <div className="flex-1" />}
 
-        <button
-          onClick={() => { setRegenPrompt(''); setRegenModal('day') }}
-          className="shrink-0 flex items-center gap-1 text-xs text-textSecondary border border-border rounded-lg px-2.5 py-1.5 active:bg-bg"
-        >
-          <RefreshCw size={11} /> New day
-        </button>
+        {!isReadOnly && (
+          <button
+            onClick={() => { setRegenPrompt(''); setRegenModal('day') }}
+            className="shrink-0 flex items-center gap-1 text-xs text-textSecondary border border-border rounded-lg px-2.5 py-1.5 active:bg-bg"
+          >
+            <RefreshCw size={11} /> New day
+          </button>
+        )}
       </div>
 
       {/* Meal list */}
@@ -234,11 +401,26 @@ export default function WeekPlanViewer({
               key={slotObj.key}
               slotLabel={slotObj.label}
               meal={meal}
-              onEdit={() => openEdit(selectedDay, slotObj.key)}
+              onEdit={isReadOnly ? null : () => openEdit(selectedDay, slotObj.key)}
             />
           )
         })}
       </div>
+
+      {/* Restore button (history mode only) */}
+      {isReadOnly && onRestore && (
+        <div className="px-4 pb-8 pt-3 bg-white border-t border-border shrink-0">
+          <button
+            onClick={onRestore}
+            className="w-full bg-teal-500 text-white font-semibold py-3.5 rounded-xl active:bg-teal-600"
+          >
+            Restore this plan
+          </button>
+          <p className="text-[11px] text-textSecondary text-center mt-2">
+            This will become your active plan. Your current plan is still saved in history.
+          </p>
+        </div>
+      )}
 
       {/* ── Edit meal modal ── */}
       <Modal
@@ -339,6 +521,92 @@ export default function WeekPlanViewer({
         </button>
       </Modal>
 
+      {/* ── Diff review modal ── */}
+      <Modal
+        open={diffItems.length > 0}
+        onClose={discardDiff}
+        title={`Review changes (${diffItems.filter(d => d.accepted).length} of ${diffItems.length} selected)`}
+      >
+        <div className="space-y-2 max-h-[55vh] overflow-y-auto">
+          <p className="text-xs text-textSecondary pb-1">
+            Toggle individual meals on/off, then apply only the ones you want.
+          </p>
+          {diffItems.map((item, idx) => (
+            <div
+              key={idx}
+              onClick={() => setDiffItems(prev => prev.map((d, i) => i === idx ? { ...d, accepted: !d.accepted } : d))}
+              className={`rounded-xl border p-3 cursor-pointer transition-colors select-none ${
+                item.accepted ? 'border-teal-300 bg-teal-50/40' : 'border-border bg-white opacity-50'
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                {/* Checkbox */}
+                <div className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
+                  item.accepted ? 'border-teal-500 bg-teal-500' : 'border-border bg-white'
+                }`}>
+                  {item.accepted && <svg width="8" height="6" viewBox="0 0 8 6" fill="none"><path d="M1 3l2 2 4-4" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wide">
+                    {item.slotLabel} · {item.dayLabel}
+                  </p>
+                  {/* Old → New */}
+                  <div className="mt-1 space-y-0.5">
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="text-[10px] font-semibold text-red-400 bg-red-50 px-1.5 py-0.5 rounded shrink-0">was</span>
+                      <span className="text-textSecondary line-through truncate">{item.oldName}</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-xs">
+                      <span className="text-[10px] font-semibold text-teal-600 bg-teal-50 px-1.5 py-0.5 rounded shrink-0">new</span>
+                      <span className="text-textPrimary font-medium truncate">{item.newMeal.name}</span>
+                    </div>
+                    {item.newMeal.nutrition?.calories && (
+                      <p className="text-[10px] text-textSecondary pl-8">
+                        {item.newMeal.nutrition.calories} kcal · {item.newMeal.nutrition.protein}g P · {item.newMeal.nutrition.carbs}g C · {item.newMeal.nutrition.fat}g F
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-4 space-y-2">
+          {/* Select all / none */}
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setDiffItems(prev => prev.map(d => ({ ...d, accepted: true })))}
+              className="flex-1 text-xs font-medium py-2 rounded-lg border border-border text-textSecondary active:bg-bg"
+            >
+              Select all
+            </button>
+            <button
+              type="button"
+              onClick={() => setDiffItems(prev => prev.map(d => ({ ...d, accepted: false })))}
+              className="flex-1 text-xs font-medium py-2 rounded-lg border border-border text-textSecondary active:bg-bg"
+            >
+              Select none
+            </button>
+          </div>
+
+          <button
+            onClick={applyDiff}
+            disabled={saving || diffItems.filter(d => d.accepted).length === 0}
+            className="w-full bg-teal-500 text-white font-semibold py-3 rounded-xl disabled:opacity-40 active:bg-teal-600 flex items-center justify-center gap-2"
+          >
+            {saving ? <Loader2 size={15} className="animate-spin" /> : `Apply ${diffItems.filter(d => d.accepted).length} change${diffItems.filter(d => d.accepted).length !== 1 ? 's' : ''}`}
+          </button>
+          <button
+            onClick={discardDiff}
+            className="w-full text-sm text-textSecondary py-2 active:opacity-70"
+          >
+            Discard all suggestions
+          </button>
+        </div>
+      </Modal>
+
       {/* ── Regenerate modal ── */}
       <Modal
         open={!!regenModal}
@@ -396,12 +664,14 @@ function MealCard({ slotLabel, meal, onEdit }) {
           ) : null}
         </div>
         <div className="flex items-center gap-1.5 shrink-0 ml-2">
-          <button
-            onClick={e => { e.stopPropagation(); onEdit() }}
-            className="p-1.5 text-textSecondary hover:text-teal-500 border border-border rounded-lg"
-          >
-            <Edit3 size={13} />
-          </button>
+          {onEdit && (
+            <button
+              onClick={e => { e.stopPropagation(); onEdit() }}
+              className="p-1.5 text-textSecondary hover:text-teal-500 border border-border rounded-lg"
+            >
+              <Edit3 size={13} />
+            </button>
+          )}
           {expanded ? <ChevronUp size={16} className="text-textSecondary" /> : <ChevronDown size={16} className="text-textSecondary" />}
         </div>
       </div>

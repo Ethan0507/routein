@@ -20,6 +20,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
   const [promptModal, setPromptModal] = useState(null)  // dayIdx awaiting regen with prompt
   const [promptText, setPromptText]   = useState('')
   const [accepting, setAccepting]     = useState(false)
+  const [planName, setPlanName]       = useState('')
   const [error, setError]             = useState('')
 
   // ── Edit modal state ─────────────────────────────────────────────────────────
@@ -96,7 +97,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
     setAccepting(true)
     setError('')
     try {
-      await saveMealPlan(user.id, { plan, targets, source: planData.source })
+      await saveMealPlan(user.id, { plan, targets, source: planData.source, name: planName.trim() || null, tags: [] })
       await upsertProfile(user.id, { plan_accepted: true })
       onAccepted()
     } catch (err) {
@@ -182,7 +183,19 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
       </div>
 
       {/* Accept button */}
-      <div className="px-4 pb-8 pt-3 bg-white border-t border-border">
+      <div className="px-4 pb-8 pt-3 bg-white border-t border-border space-y-3">
+        <div>
+          <label className="text-xs font-semibold text-textSecondary uppercase tracking-wide block mb-1.5">
+            Plan name <span className="normal-case font-normal">(optional)</span>
+          </label>
+          <input
+            className="w-full border border-border rounded-xl px-3 py-2.5 text-sm text-textPrimary focus:outline-none focus:border-teal-500 bg-white"
+            placeholder='e.g. "Bulking week", "Summer cut"'
+            value={planName}
+            onChange={e => setPlanName(e.target.value)}
+            maxLength={60}
+          />
+        </div>
         <button
           onClick={acceptPlan}
           disabled={accepting}
@@ -192,7 +205,7 @@ export default function PlanReviewScreen({ planData, onAccepted }) {
             ? <Loader2 size={18} className="animate-spin" />
             : <><Check size={18} /> Start tracking this plan</>}
         </button>
-        <p className="text-xs text-textSecondary text-center mt-2">You can edit any meal at any time after starting</p>
+        <p className="text-xs text-textSecondary text-center">You can edit any meal at any time after starting</p>
       </div>
 
       {/* Regen prompt modal */}

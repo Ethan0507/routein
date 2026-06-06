@@ -178,6 +178,19 @@ export async function upsertRoutineLog(userId, dateStr, log) {
 
 // ── Meal logs (plan-based tracking) ──────────────────────────────────────────
 
+export async function getMealLogsForRange(userId, startDate, endDate) {
+  const { data, error } = await supabase
+    .from('meal_logs')
+    .select('*')
+    .eq('user_id', userId)
+    .gte('date', startDate)
+    .lte('date', endDate)
+    .order('date', { ascending: false })
+    .order('consumed_at', { ascending: true })
+  assertNoError(error, 'getMealLogsForRange')
+  return data || []
+}
+
 export async function getMealLogsForDate(userId, dateStr) {
   const { data, error } = await supabase
     .from('meal_logs')
@@ -218,19 +231,50 @@ export async function deleteMealLog(userId, dateStr, mealSlot) {
 
 // ── Meal plans ────────────────────────────────────────────────────────────────
 
-export async function updateMealPlan(planId, { plan, targets, source }) {
+export async function updateMealPlan(planId, { plan, targets, source, name, tags }) {
+  const patch = { plan, targets, source, updated_at: new Date().toISOString() }
+  if (name  !== undefined) patch.name = name
+  if (tags  !== undefined) patch.tags = tags
   const { error } = await supabase
     .from('meal_plans')
-    .update({ plan, targets, source, updated_at: new Date().toISOString() })
+    .update(patch)
     .eq('id', planId)
   assertNoError(error, 'updateMealPlan')
 }
 
-export async function saveMealPlan(userId, { plan, targets, source }) {
+/** Update only the name/tags without touching the plan data */
+export async function updatePlanMeta(planId, { name, tags }) {
   const { error } = await supabase
     .from('meal_plans')
-    .insert({ user_id: userId, plan, targets, source, updated_at: new Date().toISOString() })
+    .update({ name, tags, updated_at: new Date().toISOString() })
+    .eq('id', planId)
+  assertNoError(error, 'updatePlanMeta')
+}
+
+export async function saveMealPlan(userId, { plan, targets, source, name, tags }) {
+  const { data, error } = await supabase
+    .from('meal_plans')
+    .insert({
+      user_id: userId, plan, targets, source,
+      name:  name  ?? null,
+      tags:  tags  ?? [],
+      updated_at: new Date().toISOString(),
+    })
+    .select('id, created_at')
+    .single()
   assertNoError(error, 'saveMealPlan')
+  return data  // { id, created_at }
+}
+
+export async function getAllMealPlans(userId) {
+  const { data, error } = await supabase
+    .from('meal_plans')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(30)
+  assertNoError(error, 'getAllMealPlans')
+  return data || []
 }
 
 export async function getActiveMealPlan(userId) {

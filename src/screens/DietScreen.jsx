@@ -1,15 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, ChevronDown, ChevronUp, Loader2, CheckCircle2, Circle, Pencil, CalendarDays } from 'lucide-react'
+import { Plus, Trash2, ChevronDown, Loader2, CheckCircle2, Circle, Pencil, CalendarDays, Clock } from 'lucide-react'
 import Modal from '../components/Modal'
 import WeekPlanViewer from '../components/WeekPlanViewer'
+import HistoryScreen from './HistoryScreen'
 import {
-  getDietEntriesForDate, getDietEntriesForRange, addDietEntry, deleteDietEntry,
+  getDietEntriesForDate, addDietEntry, deleteDietEntry,
   getMealLogsForDate, upsertMealLog, deleteMealLog,
   getActiveMealPlan, getProfile, upsertProfile, updateMealPlan,
 } from '../lib/db'
 import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
 import { useAuth } from '../contexts/AuthContext'
-import { todayStr, formatTime, nowHHmm, lastNDays, shortDate, getDayIndexForPlan, DEFAULT_MEAL_SLOTS, normalizeMealSlots, getActiveSlots } from '../lib/utils'
+import { todayStr, formatTime, nowHHmm, getDayIndexForPlan, DEFAULT_MEAL_SLOTS, normalizeMealSlots, getActiveSlots } from '../lib/utils'
 
 const MEAL_TYPES = ['Breakfast', 'Mid-morning', 'Lunch', 'Pre-workout', 'Post-workout', 'Dinner', 'Before bed', 'Snack', 'Other']
 
@@ -26,20 +27,19 @@ export default function DietScreen() {
   const [dayMeals, setDayMeals]     = useState(null)   // today's meal objects from plan
   const [targets, setTargets]       = useState(null)   // { maintenanceCalories, proteinG, carbsG, fatG }
   const [mealLogs, setMealLogs]         = useState({})
-  const [weekPlanOpen, setWeekPlanOpen] = useState(false)
-  const [userProfile, setUserProfile]   = useState(null)
+  const [weekPlanOpen, setWeekPlanOpen]     = useState(false)
+  const [planHistoryOpen, setPlanHistoryOpen] = useState(false)
+  const [userProfile, setUserProfile]       = useState(null)
   // All slot objects (with enabled flags) from the user's profile
   const [allSlots, setAllSlots]         = useState(DEFAULT_MEAL_SLOTS)
   const [slotsModalOpen, setSlotsModalOpen] = useState(false)
   const [slotsDraft, setSlotsDraft]         = useState([])
   const [slotsSaving, setSlotsSaving]       = useState(false)
 
-  // Free-form entries
+  // Free-form entries (today only)
   const [entries, setEntries]   = useState([])
-  const [history, setHistory]   = useState([])
 
   const [loading, setLoading]   = useState(true)
-  const [historyOpen, setHistoryOpen] = useState(false)
 
   // "Log this meal" state
   const [loggingSlot, setLoggingSlot] = useState(null) // slot key being logged
@@ -60,12 +60,11 @@ export default function DietScreen() {
     if (!user) return
     setLoading(true)
     try {
-      const [activePlan, profile, todayLogs, todayEntries, rangeEntries] = await Promise.all([
+      const [activePlan, profile, todayLogs, todayEntries] = await Promise.all([
         getActiveMealPlan(user.id),
         getProfile(user.id),
         getMealLogsForDate(user.id, today),
         getDietEntriesForDate(user.id, today),
-        getDietEntriesForRange(user.id, lastNDays(7)[0], today),
       ])
 
       if (activePlan) {
@@ -81,7 +80,6 @@ export default function DietScreen() {
 
       setMealLogs(todayLogs)
       setEntries(todayEntries)
-      setHistory(rangeEntries.filter(m => m.date !== today))
     } finally {
       setLoading(false)
     }
@@ -229,14 +227,6 @@ export default function DietScreen() {
   const totalCarb = macroSum(allNutritionRows, 'carbs')
   const totalFat  = macroSum(allNutritionRows, 'fat')
 
-  // History
-  const historyByDate = {}
-  for (const m of history) {
-    if (!historyByDate[m.date]) historyByDate[m.date] = []
-    historyByDate[m.date].push(m)
-  }
-  const pastDays = Object.keys(historyByDate).sort().reverse()
-
   return (
     <div className="flex flex-col min-h-full">
       {/* Header */}
@@ -248,15 +238,24 @@ export default function DietScreen() {
               {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
             </p>
           </div>
-          {plan && (
+          <div className="flex gap-2">
+            {plan && (
+              <button
+                onClick={() => setWeekPlanOpen(true)}
+                className="flex items-center gap-1.5 text-xs font-medium text-teal-600 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg active:bg-teal-100"
+              >
+                <CalendarDays size={13} />
+                Week plan
+              </button>
+            )}
             <button
-              onClick={() => setWeekPlanOpen(true)}
-              className="flex items-center gap-1.5 text-xs font-medium text-teal-600 bg-teal-50 border border-teal-200 px-3 py-1.5 rounded-lg active:bg-teal-100"
+              onClick={() => setPlanHistoryOpen(true)}
+              className="flex items-center gap-1.5 text-xs font-medium text-textSecondary border border-border px-3 py-1.5 rounded-lg active:bg-bg"
             >
-              <CalendarDays size={13} />
-              Week plan
+              <Clock size={13} />
+              History
             </button>
-          )}
+          </div>
         </div>
 
         {/* Macro progress vs targets */}
@@ -387,36 +386,17 @@ export default function DietScreen() {
               )}
             </div>
 
-            {/* ── Past 7 days ── */}
-            <div>
-              <button
-                onClick={() => setHistoryOpen(h => !h)}
-                className="flex items-center gap-1.5 text-sm font-semibold text-textPrimary w-full"
-              >
-                Past 7 days
-                {historyOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-              </button>
-              {historyOpen && (
-                <div className="mt-2 space-y-2">
-                  {pastDays.length === 0 ? (
-                    <p className="text-sm text-textSecondary py-2">No history yet.</p>
-                  ) : pastDays.map(day => (
-                    <div key={day} className="bg-white rounded-xl border border-border p-3">
-                      <p className="text-xs font-semibold text-textSecondary mb-2">{shortDate(day)}</p>
-                      {historyByDate[day].map(m => (
-                        <div key={m.id} className="flex justify-between items-center py-1 border-b border-border/60 last:border-0">
-                          <div>
-                            <p className="text-sm font-medium text-textPrimary">{m.name}</p>
-                            <p className="text-xs text-textSecondary">{m.type} · {formatTime(m.time)}</p>
-                          </div>
-                          {m.calories && <p className="text-sm font-semibold text-teal-500">{m.calories} kcal</p>}
-                        </div>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            {/* ── History link ── */}
+            <button
+              onClick={() => setPlanHistoryOpen(true)}
+              className="w-full flex items-center justify-between bg-white rounded-xl border border-border px-4 py-3 text-left active:bg-bg"
+            >
+              <div>
+                <p className="text-sm font-semibold text-textPrimary">History</p>
+                <p className="text-xs text-textSecondary mt-0.5">Timeline of meals eaten · saved plans</p>
+              </div>
+              <ChevronDown size={16} className="text-textSecondary -rotate-90" />
+            </button>
           </>
         )}
       </div>
@@ -564,16 +544,42 @@ export default function DietScreen() {
         <WeekPlanViewer
           plan={plan?.plan}
           planId={plan?.id}
+          planName={plan?.name || ''}
+          planTags={plan?.tags || []}
           targets={targets}
           mealSlots={allSlots}
           planCreatedAt={plan?.created_at}
           profile={userProfile}
+          userId={user?.id}
           onClose={() => setWeekPlanOpen(false)}
           onPlanUpdate={updatedPlan => {
-            // Reflect edits in today's diet view without a full reload
             setPlan(prev => ({ ...prev, plan: updatedPlan }))
             const dayIdx = getDayIndexForPlan(plan?.created_at)
             setDayMeals(updatedPlan[dayIdx] || updatedPlan[0] || null)
+          }}
+          onNewPlanCreated={newRow => {
+            // Full regen created a new plan row — switch the active plan
+            setPlan(prev => ({ ...prev, ...newRow }))
+            const dayIdx = getDayIndexForPlan(newRow.created_at)
+            setDayMeals(newRow.plan?.[dayIdx] || newRow.plan?.[0] || null)
+            setTargets(newRow.targets || targets)
+          }}
+        />
+      )}
+
+      {/* History (timeline + meal plans) */}
+      {planHistoryOpen && (
+        <HistoryScreen
+          activePlanId={plan?.id}
+          currentMealSlots={allSlots}
+          onClose={() => setPlanHistoryOpen(false)}
+          onPlanRestored={newRow => {
+            setPlan(newRow)
+            const dayIdx = getDayIndexForPlan(newRow.created_at)
+            setDayMeals(newRow.plan?.[dayIdx] || newRow.plan?.[0] || null)
+            setTargets(newRow.targets || targets)
+            setPlanHistoryOpen(false)
+            setWeekPlanOpen(false)
           }}
         />
       )}
