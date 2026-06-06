@@ -91,6 +91,16 @@ export async function saveGroceries(userId, items) {
   assertNoError(error, 'saveGroceries')
 }
 
+export async function getGroceryHaveState(userId) {
+  const { data, error } = await supabase
+    .from('groceries')
+    .select('have_state')
+    .eq('user_id', userId)
+    .maybeSingle()
+  assertNoError(error, 'getGroceryHaveState')
+  return data?.have_state || {}
+}
+
 export async function saveGroceryHaveState(userId, haveState) {
   const { error } = await supabase
     .from('groceries')

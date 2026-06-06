@@ -7,8 +7,10 @@ import {
   getDietEntriesForDate, addDietEntry, deleteDietEntry,
   getMealLogsForDate, upsertMealLog, deleteMealLog,
   getActiveMealPlan, getProfile, upsertProfile, updateMealPlan,
+  getGroceryHaveState, saveGroceryHaveState,
 } from '../lib/db'
 import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
+import { computeMealDeductions, applyDeductions } from '../lib/groceryUtils'
 import { useAuth } from '../contexts/AuthContext'
 import { todayStr, formatTime, nowHHmm, getDayIndexForPlan, DEFAULT_MEAL_SLOTS, normalizeMealSlots, getActiveSlots } from '../lib/utils'
 
@@ -128,6 +130,15 @@ export default function DietScreen() {
         ...prev,
         [slot]: { meal_slot: slot, completed: true, consumed_at: nowHHmm(), nutrition },
       }))
+
+      // Deduct ingredients from grocery have-state (fire-and-forget)
+      if (meal.ingredients?.length) {
+        getGroceryHaveState(user.id).then(current => {
+          const deductions = computeMealDeductions(meal.ingredients)
+          const updated    = applyDeductions(current, deductions)
+          saveGroceryHaveState(user.id, updated).catch(() => {})
+        }).catch(() => {})
+      }
     } finally {
       setLoggingSlot(null)
     }

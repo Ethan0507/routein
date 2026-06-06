@@ -4,8 +4,10 @@ import Modal from '../components/Modal'
 import {
   getRoutineSettings, saveRoutineSettings, getRoutineLogsForDate, upsertRoutineLog, getRoutineLogsForRange,
   getActiveMealPlan, getMealLogsForDate, upsertMealLog, deleteMealLog, DIET_BLOCK_IDS,
+  getGroceryHaveState, saveGroceryHaveState,
 } from '../lib/db'
 import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
+import { computeMealDeductions, applyDeductions } from '../lib/groceryUtils'
 import { useAuth } from '../contexts/AuthContext'
 import { todayStr, formatTime, nowHHmm, uid, isTimePast, lastNDays, getDayIndexForPlan } from '../lib/utils'
 
@@ -121,6 +123,15 @@ export default function RoutineScreen() {
           consumed_at: logTime,
           nutrition,
         })
+
+        // Deduct ingredients from grocery have-state (fire-and-forget)
+        if (meal?.ingredients?.length) {
+          getGroceryHaveState(user.id).then(current => {
+            const deductions = computeMealDeductions(meal.ingredients)
+            const updated    = applyDeductions(current, deductions)
+            saveGroceryHaveState(user.id, updated).catch(() => {})
+          }).catch(() => {})
+        }
       } finally {
         setDietLogging(null)
       }
