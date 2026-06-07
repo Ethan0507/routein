@@ -10,6 +10,7 @@ import DietScreen        from './screens/DietScreen'
 import GroceryScreen     from './screens/GroceryScreen'
 import RoutineScreen     from './screens/RoutineScreen'
 import InsightsScreen    from './screens/InsightsScreen'
+import LibraryScreen     from './screens/LibraryScreen'
 
 // App states: loading → auth | onboarding | reviewing | app
 function AppRoutes() {
@@ -68,6 +69,7 @@ function AppRoutes() {
         <Route path="groceries" element={<GroceryScreen />} />
         <Route path="routine"   element={<RoutineScreen />} />
         <Route path="insights"  element={<InsightsScreen />} />
+        <Route path="library"   element={<LibraryScreen />} />
         <Route path="*"         element={<Navigate to="/routine" replace />} />
       </Route>
     </Routes>

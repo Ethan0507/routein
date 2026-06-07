@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react'
 import { X, Loader2, ChevronRight, ChevronDown, ChevronUp } from 'lucide-react'
-import { getDietEntriesForRange, getMealLogsForRange, getAllMealPlans, saveMealPlan } from '../lib/db'
+import { getDietEntriesForRange, getMealLogsForRange, getAllMealPlans, saveMealPlan, getCustomMeals, deleteCustomMeal, addDietEntry } from '../lib/db'
 import { useAuth } from '../contexts/AuthContext'
-import { lastNDays, shortDate, formatTime, normalizeMealSlots } from '../lib/utils'
+import { lastNDays, shortDate, formatTime, normalizeMealSlots, todayStr, nowHHmm } from '../lib/utils'
 import WeekPlanViewer from '../components/WeekPlanViewer'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ export default function HistoryScreen({
   activePlanId, currentMealSlots, onClose, onPlanRestored,
 }) {
   const { user }    = useAuth()
-  const [tab, setTab] = useState('timeline') // 'timeline' | 'plans'
+  const [tab, setTab] = useState('timeline') // 'timeline' | 'plans' | 'meals'
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-bg">
@@ -49,6 +49,7 @@ export default function HistoryScreen({
           {[
             { key: 'timeline', label: 'Timeline' },
             { key: 'plans',    label: 'Meal Plans' },
+            { key: 'meals',    label: 'Custom Meals' },
           ].map(({ key, label }) => (
             <button
               key={key}
@@ -65,14 +66,16 @@ export default function HistoryScreen({
         </div>
       </div>
 
-      {tab === 'timeline'
-        ? <TimelineTab userId={user?.id} />
-        : <PlansTab
-            userId={user?.id}
-            activePlanId={activePlanId}
-            currentMealSlots={currentMealSlots}
-            onPlanRestored={onPlanRestored}
-          />}
+      {tab === 'timeline' && <TimelineTab userId={user?.id} />}
+      {tab === 'plans' && (
+        <PlansTab
+          userId={user?.id}
+          activePlanId={activePlanId}
+          currentMealSlots={currentMealSlots}
+          onPlanRestored={onPlanRestored}
+        />
+      )}
+      {tab === 'meals' && <CustomMealsTab userId={user?.id} />}
     </div>
   )
 }
@@ -326,6 +329,152 @@ function PlansTab({ userId, activePlanId, currentMealSlots, onPlanRestored }) {
             </div>
             <ChevronRight size={16} className="text-textSecondary shrink-0" />
           </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Custom Meals tab — saved custom meals directory
+// ─────────────────────────────────────────────────────────────────────────────
+function CustomMealsTab({ userId }) {
+  const [meals, setMeals]       = useState([])
+  const [loading, setLoading]   = useState(true)
+  const [logging, setLogging]   = useState(null)   // meal id being logged
+  const [deleting, setDeleting] = useState(null)   // meal id being deleted
+  const [expanded, setExpanded] = useState(null)   // meal id expanded
+  const [loggedId, setLoggedId] = useState(null)   // brief success flash
+
+  useEffect(() => {
+    if (!userId) return
+    getCustomMeals(userId).then(setMeals).finally(() => setLoading(false))
+  }, [userId])
+
+  async function handleLog(meal) {
+    setLogging(meal.id)
+    try {
+      await addDietEntry(userId, {
+        date:     todayStr(),
+        name:     meal.meal_name,
+        type:     'Other',
+        time:     nowHHmm(),
+        calories: meal.nutrition?.calories || null,
+        protein:  meal.nutrition?.protein  || null,
+        carbs:    meal.nutrition?.carbs    || null,
+        fat:      meal.nutrition?.fat      || null,
+      })
+      setLoggedId(meal.id)
+      setTimeout(() => setLoggedId(null), 2000)
+    } finally {
+      setLogging(null)
+    }
+  }
+
+  async function handleDelete(meal) {
+    setDeleting(meal.id)
+    try {
+      await deleteCustomMeal(userId, meal.id)
+      setMeals(prev => prev.filter(m => m.id !== meal.id))
+    } finally {
+      setDeleting(null)
+    }
+  }
+
+  if (loading) return (
+    <div className="flex-1 flex justify-center items-center">
+      <Loader2 size={24} className="animate-spin text-teal-500" />
+    </div>
+  )
+
+  if (meals.length === 0) return (
+    <div className="flex-1 flex flex-col items-center justify-center px-6 text-center">
+      <p className="text-textSecondary text-sm">No custom meals saved yet.</p>
+      <p className="text-xs text-textSecondary mt-1">
+        When logging a meal, tap the pencil icon and toggle "Save as custom meal".
+      </p>
+    </div>
+  )
+
+  return (
+    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-2">
+      {meals.map(meal => {
+        const n          = meal.nutrition || {}
+        const isExpanded = expanded === meal.id
+        const isLogged   = loggedId === meal.id
+
+        return (
+          <div key={meal.id} className="bg-white rounded-xl border border-border overflow-hidden">
+            <div
+              className="flex items-center gap-3 px-4 py-3 cursor-pointer select-none"
+              onClick={() => setExpanded(isExpanded ? null : meal.id)}
+            >
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-textPrimary truncate">{meal.meal_name}</p>
+                {n.calories && (
+                  <p className="text-xs text-textSecondary mt-0.5">
+                    {n.calories} kcal · {n.protein}g P · {n.carbs}g C · {n.fat}g F{n.fibre ? ` · ${n.fibre}g fibre` : ''}
+                  </p>
+                )}
+                <p className="text-[10px] text-textSecondary mt-0.5">{formatDate(meal.created_at)}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {isExpanded ? <ChevronUp size={15} className="text-textSecondary" /> : <ChevronDown size={15} className="text-textSecondary" />}
+              </div>
+            </div>
+
+            {isExpanded && (
+              <div className="border-t border-border/60 px-4 pb-3 pt-3 space-y-3">
+                {/* Macro grid */}
+                {n.calories && (
+                  <div className="grid grid-cols-5 gap-1.5 text-center">
+                    {[
+                      { label: 'Cal',    val: n.calories, unit: 'kcal', color: 'text-teal-600' },
+                      { label: 'Protein', val: n.protein, unit: 'g',   color: 'text-blue-500' },
+                      { label: 'Carbs',  val: n.carbs,   unit: 'g',   color: 'text-orange-400' },
+                      { label: 'Fat',    val: n.fat,     unit: 'g',   color: 'text-textSecondary' },
+                      { label: 'Fibre',  val: n.fibre,   unit: 'g',   color: 'text-green-600' },
+                    ].map(({ label, val, unit, color }) => val != null ? (
+                      <div key={label} className="bg-bg rounded-lg py-1.5">
+                        <p className={`text-sm font-bold ${color}`}>{val}<span className="text-[9px] font-normal ml-0.5">{unit}</span></p>
+                        <p className="text-[9px] text-textSecondary">{label}</p>
+                      </div>
+                    ) : null)}
+                  </div>
+                )}
+
+                {/* Source description */}
+                {meal.source_description && (
+                  <div>
+                    <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wide mb-0.5">Based on</p>
+                    <p className="text-xs text-textPrimary italic">"{meal.source_description}"</p>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => handleLog(meal)}
+                    disabled={!!logging || isLogged}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 ${
+                      isLogged
+                        ? 'bg-teal-50 text-teal-600 border border-teal-200'
+                        : 'bg-teal-500 text-white active:bg-teal-600 disabled:opacity-50'
+                    }`}
+                  >
+                    {logging === meal.id ? <Loader2 size={14} className="animate-spin" /> : isLogged ? '✓ Logged today' : 'Log today'}
+                  </button>
+                  <button
+                    onClick={() => handleDelete(meal)}
+                    disabled={deleting === meal.id}
+                    className="px-3 py-2.5 rounded-xl border border-red-200 text-red-400 active:bg-red-50 disabled:opacity-50"
+                  >
+                    {deleting === meal.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         )
       })}
     </div>

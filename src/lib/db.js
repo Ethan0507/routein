@@ -1,22 +1,60 @@
 import { supabase } from './supabase'
 
-// ── Default routine blocks ────────────────────────────────────────────────────
+// ── Routine constants ─────────────────────────────────────────────────────────
 
-// Block IDs that are always mandatory and linked to the Diet screen
 export const DIET_BLOCK_IDS = ['breakfast', 'lunch', 'dinner']
 
-export const DEFAULT_BLOCKS = [
-  { id: 'wake_up',    name: 'Wake up',         planned_time: '07:00', type: 'mandatory', enabled: true },
-  { id: 'stretching', name: 'Stretching',       planned_time: '07:15', type: 'optional',  enabled: true },
-  { id: 'breakfast',  name: 'Breakfast',        planned_time: '07:45', type: 'mandatory', enabled: true },
-  { id: 'study',      name: 'Study / Upskill',  planned_time: '08:30', type: 'optional',  enabled: true },
-  { id: 'work1',      name: 'Work block 1',     planned_time: '10:00', type: 'optional',  enabled: true },
-  { id: 'lunch',      name: 'Lunch',            planned_time: '13:30', type: 'mandatory', enabled: true },
-  { id: 'work2',      name: 'Work block 2',     planned_time: '15:00', type: 'optional',  enabled: true },
-  { id: 'workout',    name: 'Workout',          planned_time: '17:30', type: 'mandatory', enabled: true },
-  { id: 'music',      name: 'Music / Side gig', planned_time: '19:00', type: 'optional',  enabled: true },
-  { id: 'dinner',     name: 'Dinner',           planned_time: '22:00', type: 'mandatory', enabled: true },
+// Fixed section definitions (id + display only — blocks are stored per-user)
+export const ROUTINE_SECTIONS = [
+  { id: 'sleep',     name: 'Sleep',     emoji: '😴' },
+  { id: 'nutrition', name: 'Nutrition', emoji: '🥗' },
+  { id: 'exercise',  name: 'Exercise',  emoji: '💪' },
+  { id: 'work',      name: 'Work',      emoji: '💼' },
+  { id: 'hobbies',   name: 'Hobbies',   emoji: '🎨' },
+  { id: 'other',     name: 'Other',     emoji: '⚡' },
 ]
+
+export const DEFAULT_SECTIONS = [
+  { id: 'sleep',     name: 'Sleep',     emoji: '😴', blocks: [
+    { id: 'wake_up',  name: 'Wake up',  planned_time: '06:30', type: 'mandatory', enabled: true },
+    { id: 'bed_time', name: 'Bed time', planned_time: '23:00', type: 'optional',  enabled: true },
+  ]},
+  { id: 'nutrition', name: 'Nutrition', emoji: '🥗', blocks: [] },
+  { id: 'exercise',  name: 'Exercise',  emoji: '💪', blocks: [
+    { id: 'workout',  name: 'Workout',  planned_time: '07:00', type: 'mandatory', enabled: true },
+  ]},
+  { id: 'work',      name: 'Work',      emoji: '💼', blocks: [
+    { id: 'work',     name: 'Work',     planned_time: '09:00', type: 'optional',  enabled: true },
+  ]},
+  { id: 'hobbies',   name: 'Hobbies',   emoji: '🎨', blocks: [
+    { id: 'reading',  name: 'Reading',  planned_time: '21:00', type: 'optional',  enabled: true },
+  ]},
+  { id: 'other',     name: 'Other',     emoji: '⚡', blocks: [] },
+]
+
+// Kept for backward compat
+export const DEFAULT_BLOCKS = []
+
+// Maps old flat block IDs → section IDs for migration
+const BLOCK_SECTION_MAP = {
+  wake_up: 'sleep', bed_time: 'sleep', stretching: 'sleep',
+  breakfast: 'nutrition', lunch: 'nutrition', dinner: 'nutrition',
+  midMorning: 'nutrition', preWorkout: 'nutrition', postWorkout: 'nutrition', beforeBed: 'nutrition',
+  workout: 'exercise',
+  work: 'work', work1: 'work', work2: 'work',
+  study: 'hobbies', reading: 'hobbies', music: 'hobbies',
+}
+
+function migrateFlatToSections(flatBlocks) {
+  const sections = DEFAULT_SECTIONS.map(s => ({ ...s, blocks: [] }))
+  const idx = Object.fromEntries(sections.map((s, i) => [s.id, i]))
+  for (const block of flatBlocks) {
+    if (DIET_BLOCK_IDS.includes(block.id)) continue  // comes from syncDiet
+    const sectionId = BLOCK_SECTION_MAP[block.id] || 'other'
+    sections[idx[sectionId]].blocks.push(block)
+  }
+  return sections
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -113,31 +151,221 @@ export async function saveGroceryHaveState(userId, haveState) {
 export async function getRoutineSettings(userId) {
   const { data, error } = await supabase
     .from('routine_settings')
-    .select('blocks')
+    .select('blocks, sections, sync_diet, diet_block_times, onboarding_complete')
     .eq('user_id', userId)
     .maybeSingle()
   assertNoError(error, 'getRoutineSettings')
+
   if (!data) {
-    // First time — seed defaults
-    await saveRoutineSettings(userId, { blocks: DEFAULT_BLOCKS })
-    return { blocks: DEFAULT_BLOCKS }
+    return { sections: null, syncDiet: false, dietBlockTimes: {}, onboardingComplete: false }
   }
-  // Migrate existing users: ensure diet blocks are always mandatory + enabled
-  const migrated = data.blocks.map(b =>
-    DIET_BLOCK_IDS.includes(b.id) ? { ...b, type: 'mandatory', enabled: true } : b
-  )
-  return { blocks: migrated }
+
+  const syncDiet           = data.sync_diet ?? false
+  const dietBlockTimes     = data.diet_block_times ?? {}
+  const onboardingComplete = data.onboarding_complete ?? true
+
+  // If sections exist in DB, use them directly
+  if (data.sections) {
+    return { sections: data.sections, syncDiet, dietBlockTimes, onboardingComplete }
+  }
+
+  // Migrate old flat blocks → sections (existing users)
+  const sections = migrateFlatToSections(data.blocks || [])
+  return { sections, syncDiet: true, dietBlockTimes, onboardingComplete }
 }
 
 export async function saveRoutineSettings(userId, settings) {
+  // Flatten all section blocks into a legacy `blocks` array for backward compat
+  const flatBlocks = (settings.sections || []).flatMap(s => s.blocks || [])
   const { error } = await supabase
     .from('routine_settings')
     .upsert({
-      user_id: userId,
-      blocks: settings.blocks,
-      updated_at: new Date().toISOString(),
+      user_id:             userId,
+      sections:            settings.sections ?? [],
+      blocks:              flatBlocks,
+      sync_diet:           settings.syncDiet ?? false,
+      diet_block_times:    settings.dietBlockTimes ?? {},
+      onboarding_complete: settings.onboardingComplete ?? true,
+      updated_at:          new Date().toISOString(),
     }, { onConflict: 'user_id' })
   assertNoError(error, 'saveRoutineSettings')
+}
+
+// ── Routines (library) ────────────────────────────────────────────────────────
+
+function normalizeRoutine(row) {
+  return {
+    id:              row.id,
+    name:            row.name || '',
+    tags:            row.tags || [],
+    sections:        row.sections,
+    syncDiet:        row.sync_diet ?? false,
+    dietBlockTimes:  row.diet_block_times ?? {},
+    isActive:        row.is_active ?? false,
+    changelog:       row.changelog || [],
+    onboardingComplete: true,
+    createdAt:       row.created_at,
+    updatedAt:       row.updated_at,
+  }
+}
+
+export async function getActiveRoutine(userId) {
+  // Check routines table for active entry
+  const { data: activeRow, error } = await supabase
+    .from('routines')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('is_active', true)
+    .maybeSingle()
+  assertNoError(error, 'getActiveRoutine')
+  if (activeRow) return normalizeRoutine(activeRow)
+
+  // Migration: auto-create a routines row from routine_settings if it exists
+  const { data: settings } = await supabase
+    .from('routine_settings')
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  if (settings && (settings.sections || settings.blocks?.length)) {
+    const sections = settings.sections || migrateFlatToSections(settings.blocks || [])
+    const { data: created, error: ce } = await supabase
+      .from('routines')
+      .insert({
+        user_id:         userId,
+        name:            'My Routine',
+        tags:            [],
+        sections,
+        sync_diet:       settings.sync_diet ?? false,
+        diet_block_times: settings.diet_block_times ?? {},
+        is_active:       true,
+        changelog:       [{ timestamp: new Date().toISOString(), summary: 'Migrated from routine settings' }],
+      })
+      .select()
+      .single()
+    assertNoError(ce, 'getActiveRoutine:migrate')
+    return normalizeRoutine(created)
+  }
+
+  return null
+}
+
+export async function getAllRoutines(userId) {
+  const { data, error } = await supabase
+    .from('routines')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+  assertNoError(error, 'getAllRoutines')
+  return (data || []).map(normalizeRoutine)
+}
+
+export async function createRoutine(userId, routine) {
+  if (routine.isActive) {
+    await supabase.from('routines').update({ is_active: false }).eq('user_id', userId)
+  }
+  const { data, error } = await supabase
+    .from('routines')
+    .insert({
+      user_id:         userId,
+      name:            routine.name || null,
+      tags:            routine.tags || [],
+      sections:        routine.sections || [],
+      sync_diet:       routine.syncDiet ?? false,
+      diet_block_times: routine.dietBlockTimes ?? {},
+      is_active:       routine.isActive ?? false,
+      changelog:       [{ timestamp: new Date().toISOString(), summary: 'Routine created' }],
+    })
+    .select()
+    .single()
+  assertNoError(error, 'createRoutine')
+  return normalizeRoutine(data)
+}
+
+export async function updateRoutineInPlace(id, updates, changelogSummary) {
+  const patch = { updated_at: new Date().toISOString() }
+  if (updates.sections       !== undefined) patch.sections         = updates.sections
+  if (updates.syncDiet       !== undefined) patch.sync_diet        = updates.syncDiet
+  if (updates.dietBlockTimes !== undefined) patch.diet_block_times = updates.dietBlockTimes
+  if (updates.name           !== undefined) patch.name             = updates.name || null
+  if (updates.tags           !== undefined) patch.tags             = updates.tags || []
+
+  if (changelogSummary) {
+    const { data: cur } = await supabase.from('routines').select('changelog').eq('id', id).single()
+    patch.changelog = [
+      { timestamp: new Date().toISOString(), summary: changelogSummary },
+      ...(cur?.changelog || []),
+    ].slice(0, 50)
+  }
+
+  const { error } = await supabase.from('routines').update(patch).eq('id', id)
+  assertNoError(error, 'updateRoutineInPlace')
+}
+
+export async function activateRoutine(userId, id) {
+  await supabase.from('routines').update({ is_active: false }).eq('user_id', userId)
+  const { error } = await supabase
+    .from('routines')
+    .update({ is_active: true, updated_at: new Date().toISOString() })
+    .eq('id', id).eq('user_id', userId)
+  assertNoError(error, 'activateRoutine')
+}
+
+export async function deactivateAllRoutines(userId) {
+  const { error } = await supabase.from('routines').update({ is_active: false }).eq('user_id', userId)
+  assertNoError(error, 'deactivateAllRoutines')
+}
+
+export async function deleteRoutine(userId, id) {
+  const { error } = await supabase.from('routines').delete().eq('id', id).eq('user_id', userId)
+  assertNoError(error, 'deleteRoutine')
+}
+
+/** Compute a human-readable summary of what changed between two routine versions */
+export function diffRoutineSections(oldSections, newSections, oldSync, newSync) {
+  const changes = []
+  if (oldSync !== newSync) changes.push(newSync ? 'Diet sync enabled' : 'Diet sync disabled')
+
+  const oldBlocks = new Map((oldSections || []).flatMap(s => s.blocks || []).map(b => [b.id, b]))
+  const newBlocks = new Map((newSections || []).flatMap(s => s.blocks || []).map(b => [b.id, b]))
+
+  for (const [id, nb] of newBlocks) {
+    const ob = oldBlocks.get(id)
+    if (!ob) {
+      changes.push(`Added "${nb.name}"`)
+    } else {
+      if (ob.name !== nb.name) changes.push(`"${ob.name}" → "${nb.name}"`)
+      if (ob.planned_time !== nb.planned_time) changes.push(`${nb.name}: ${ob.planned_time} → ${nb.planned_time}`)
+      if (ob.type !== nb.type) changes.push(`${nb.name} now ${nb.type}`)
+    }
+  }
+  for (const [id, ob] of oldBlocks) {
+    if (!newBlocks.has(id)) changes.push(`Removed "${ob.name}"`)
+  }
+
+  if (!changes.length) return null
+  return changes.slice(0, 5).join(' · ') + (changes.length > 5 ? ` +${changes.length - 5} more` : '')
+}
+
+// ── Saved routines (legacy — kept for backward compat reads) ──────────────────
+
+export async function getSavedRoutines(userId) {
+  const { data, error } = await supabase
+    .from('saved_routines')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+  assertNoError(error, 'getSavedRoutines')
+  return data || []
+}
+
+export async function deleteSavedRoutine(userId, id) {
+  const { error } = await supabase
+    .from('saved_routines')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId)
+  assertNoError(error, 'deleteSavedRoutine')
 }
 
 // ── Routine logs ──────────────────────────────────────────────────────────────
@@ -171,18 +399,20 @@ export async function getRoutineLogsForRange(userId, startDate, endDate) {
 }
 
 export async function upsertRoutineLog(userId, dateStr, log) {
+  const row = {
+    user_id:      userId,
+    date:         dateStr,
+    block_id:     log.block_id,
+    block_name:   log.block_name,
+    block_type:   log.block_type,
+    planned_time: log.planned_time,
+    actual_time:  log.actual_time,
+    note:         log.note || null,
+  }
+  if (log.routine_id) row.routine_id = log.routine_id
   const { error } = await supabase
     .from('routine_logs')
-    .upsert({
-      user_id: userId,
-      date: dateStr,
-      block_id: log.block_id,
-      block_name: log.block_name,
-      block_type: log.block_type,
-      planned_time: log.planned_time,
-      actual_time: log.actual_time,
-      note: log.note || null,
-    }, { onConflict: 'user_id,date,block_id' })
+    .upsert(row, { onConflict: 'user_id,date,block_id' })
   assertNoError(error, 'upsertRoutineLog')
 }
 
@@ -288,15 +518,65 @@ export async function getAllMealPlans(userId) {
 }
 
 export async function getActiveMealPlan(userId) {
-  const { data, error } = await supabase
+  // Try explicit is_active flag first
+  const { data: active, error } = await supabase
+    .from('meal_plans')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('is_active', true)
+    .maybeSingle()
+  assertNoError(error, 'getActiveMealPlan')
+  if (active) return active
+
+  // Migration: mark the most recent plan as active
+  const { data: latest } = await supabase
     .from('meal_plans')
     .select('*')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle()
-  assertNoError(error, 'getActiveMealPlan')
-  return data
+
+  if (latest) {
+    try { await supabase.from('meal_plans').update({ is_active: true }).eq('id', latest.id) } catch { /* non-fatal */ }
+    return { ...latest, is_active: true }
+  }
+
+  return null
+}
+
+export async function activateMealPlan(userId, id) {
+  await supabase.from('meal_plans').update({ is_active: false }).eq('user_id', userId)
+  const { error } = await supabase
+    .from('meal_plans')
+    .update({ is_active: true, updated_at: new Date().toISOString() })
+    .eq('id', id).eq('user_id', userId)
+  assertNoError(error, 'activateMealPlan')
+}
+
+export async function deactivateMealPlan(userId) {
+  const { error } = await supabase.from('meal_plans').update({ is_active: false }).eq('user_id', userId)
+  assertNoError(error, 'deactivateMealPlan')
+}
+
+export async function deleteMealPlan(userId, id) {
+  const { error } = await supabase.from('meal_plans').delete().eq('id', id).eq('user_id', userId)
+  assertNoError(error, 'deleteMealPlan')
+}
+
+export async function appendMealPlanChangelog(planId, summary) {
+  const { data: cur } = await supabase.from('meal_plans').select('changelog').eq('id', planId).single()
+  const { error } = await supabase
+    .from('meal_plans')
+    .update({
+      changelog: [
+        { timestamp: new Date().toISOString(), summary },
+        ...(cur?.changelog || []),
+      ].slice(0, 50),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', planId)
+  assertNoError(error, 'appendMealPlanChangelog')
 }
 
 // ── User profile ──────────────────────────────────────────────────────────────
@@ -346,6 +626,21 @@ export async function getCustomMeals(userId) {
     .order('created_at', { ascending: false })
   assertNoError(error, 'getCustomMeals')
   return data || []
+}
+
+export async function updateCustomMeal(id, meal) {
+  const { error } = await supabase
+    .from('custom_meals')
+    .update({
+      meal_name:          meal.meal_name,
+      short_name:         meal.short_name || null,
+      recipe:             meal.recipe || null,
+      source_description: meal.source_description || null,
+      ingredients:        meal.ingredients || null,
+      nutrition:          meal.nutrition || null,
+    })
+    .eq('id', id)
+  assertNoError(error, 'updateCustomMeal')
 }
 
 export async function deleteCustomMeal(userId, id) {

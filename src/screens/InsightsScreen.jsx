@@ -23,17 +23,23 @@ export default function InsightsScreen() {
         getDietEntriesForRange(user.id, start, end),
       ])
 
-      // Streak for workout
+      // Streak for any exercise-section block
+      const exerciseBlockIds = settings.sections
+        ? (settings.sections.find(s => s.id === 'exercise')?.blocks || []).map(b => b.id)
+        : ['workout']
       const streakDays = lastNDays(60).reverse()
       let workoutStreak = 0
       for (const day of streakDays) {
         if (day === todayStr()) continue
-        const hit = (rangeLogs[day] || []).find(l => l.block_id === 'workout' && l.actual_time)
+        const hit = (rangeLogs[day] || []).find(l => exerciseBlockIds.includes(l.block_id) && l.actual_time)
         if (hit) workoutStreak++
         else break
       }
 
-      const enabledBlocks = settings.blocks.filter(b => b.enabled)
+      // Flatten sections → blocks (handles both old flat format and new sections format)
+      const enabledBlocks = settings.sections
+        ? settings.sections.flatMap(s => s.blocks || []).filter(b => b.enabled !== false)
+        : (settings.blocks || []).filter(b => b.enabled)
 
       // Per-block completion over 7 days
       const blockStats = enabledBlocks.map(block => {

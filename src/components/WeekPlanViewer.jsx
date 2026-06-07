@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X, ChevronDown, ChevronUp, Edit3, RefreshCw, Loader2, Plus, Trash2, Sparkles } from 'lucide-react'
 import Modal from './Modal'
+import MealCataloguePicker from './MealCataloguePicker'
 import { getActiveSlots, normalizeMealSlots } from '../lib/utils'
 import { generateMealPlanWithLLM } from '../lib/mealRecommendation'
 import { updateMealPlan, saveMealPlan, updatePlanMeta } from '../lib/db'
@@ -66,6 +67,8 @@ export default function WeekPlanViewer({
   const [editRecipe, setEditRecipe]         = useState('')
   const [editIngredients, setEditIngredients] = useState([])
   const [editNutrition, setEditNutrition]   = useState({ calories: '', protein: '', carbs: '', fat: '', fibre: '' })
+
+  const [catalogueOpen, setCatalogueOpen]   = useState(false)
 
   // ── Regen modal (day or full plan) ───────────────────────────────────────────
   const [regenModal, setRegenModal]   = useState(null) // 'day' | 'plan'
@@ -429,6 +432,12 @@ export default function WeekPlanViewer({
         title={editModal ? `Edit — ${slots.find(s => s.key === editModal.slotKey)?.label || editModal.slotKey}` : ''}
       >
         <div className="space-y-3 max-h-[65vh] overflow-y-auto">
+          <button
+            onClick={() => setCatalogueOpen(true)}
+            className="w-full border border-teal-200 text-teal-600 text-sm font-semibold py-2.5 rounded-xl active:bg-teal-50 flex items-center justify-center gap-1.5"
+          >
+            📋 Fill from saved meals
+          </button>
           <div>
             <label className="text-xs font-medium text-textSecondary block mb-1">Meal name</label>
             <input
@@ -640,6 +649,34 @@ export default function WeekPlanViewer({
           </button>
         </div>
       </Modal>
+
+      {/* Meal catalogue picker — used from edit meal modal */}
+      <MealCataloguePicker
+        userId={userId}
+        open={catalogueOpen}
+        onClose={() => setCatalogueOpen(false)}
+        onSelect={meal => {
+          setCatalogueOpen(false)
+          setEditName(meal.meal_name || '')
+          setEditRecipe(meal.recipe || '')
+          setEditIngredients(
+            meal.ingredients?.length
+              ? meal.ingredients
+              : meal.source_description
+                ? [{ name: meal.source_description, qty: '' }]
+                : []
+          )
+          if (meal.nutrition) {
+            setEditNutrition({
+              calories: meal.nutrition.calories ?? '',
+              protein:  meal.nutrition.protein  ?? '',
+              carbs:    meal.nutrition.carbs    ?? '',
+              fat:      meal.nutrition.fat      ?? '',
+              fibre:    meal.nutrition.fibre    ?? '',
+            })
+          }
+        }}
+      />
     </div>
   )
 }

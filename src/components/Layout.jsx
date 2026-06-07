@@ -1,11 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom'
-import { UtensilsCrossed, ShoppingCart, CalendarCheck, BarChart2 } from 'lucide-react'
+import { UtensilsCrossed, ShoppingCart, CalendarCheck, BarChart2, Library } from 'lucide-react'
 
 const tabs = [
+  { to: '/routine',   label: 'Routine',   Icon: CalendarCheck },
   { to: '/diet',      label: 'Diet',      Icon: UtensilsCrossed },
   { to: '/groceries', label: 'Groceries', Icon: ShoppingCart },
-  { to: '/routine',   label: 'Routine',   Icon: CalendarCheck },
   { to: '/insights',  label: 'Insights',  Icon: BarChart2 },
+  { to: '/library',   label: 'Library',   Icon: Library },
 ]
 
 export default function Layout() {

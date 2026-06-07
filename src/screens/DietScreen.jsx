@@ -14,6 +14,7 @@ import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
 import { computeMealDeductions, applyDeductions } from '../lib/groceryUtils'
 import { useAuth } from '../contexts/AuthContext'
 import { todayStr, formatTime, nowHHmm, getDayIndexForPlan, DEFAULT_MEAL_SLOTS, normalizeMealSlots, getActiveSlots } from '../lib/utils'
+import MealCataloguePicker from '../components/MealCataloguePicker'
 
 const MEAL_TYPES = ['Breakfast', 'Mid-morning', 'Lunch', 'Pre-workout', 'Post-workout', 'Dinner', 'Before bed', 'Snack', 'Other']
 
@@ -57,6 +58,8 @@ export default function DietScreen() {
   const [customError, setCustomError]   = useState('')
   // Save-as-custom-meal
   const [savingCustom, setSavingCustom] = useState(false)
+  // Meal catalogue picker
+  const [catalogueOpen, setCatalogueOpen] = useState(false)
   const [saveAsCustom, setSaveAsCustom] = useState(false)
   const [customMealName, setCustomMealName] = useState('')
   const [savedConfirm, setSavedConfirm] = useState(false)
@@ -481,6 +484,12 @@ export default function DietScreen() {
               />
               <p className="text-[11px] text-textSecondary mt-1">Describe what you ate including quantities. AI will estimate macros.</p>
             </div>
+            <button
+              onClick={() => setCatalogueOpen(true)}
+              className="w-full border border-teal-200 text-teal-600 text-sm font-semibold py-2.5 rounded-xl active:bg-teal-50 flex items-center justify-center gap-1.5"
+            >
+              📋 Pick from saved meals
+            </button>
             {customError && <p className="text-xs text-red-500">{customError}</p>}
             <button
               onClick={estimateCustom}
@@ -722,6 +731,27 @@ export default function DietScreen() {
           }}
         />
       )}
+
+      {/* Meal catalogue picker — used from custom override input phase */}
+      <MealCataloguePicker
+        userId={user?.id}
+        open={catalogueOpen}
+        onClose={() => setCatalogueOpen(false)}
+        onSelect={meal => {
+          setCatalogueOpen(false)
+          setCustomDesc(meal.meal_name + (meal.source_description ? ` — ${meal.source_description}` : ''))
+          if (meal.nutrition) {
+            setCustomNutrition({
+              calories: meal.nutrition.calories ?? '',
+              protein:  meal.nutrition.protein  ?? '',
+              carbs:    meal.nutrition.carbs    ?? '',
+              fat:      meal.nutrition.fat      ?? '',
+              fibre:    meal.nutrition.fibre    ?? '',
+            })
+            setCustomPhase('preview')
+          }
+        }}
+      />
     </div>
   )
 }
