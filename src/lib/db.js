@@ -317,3 +317,42 @@ export async function upsertProfile(userId, profile) {
     .upsert({ id: userId, ...profile, updated_at: new Date().toISOString() }, { onConflict: 'id' })
   assertNoError(error, 'upsertProfile')
 }
+
+// ── Custom meals ──────────────────────────────────────────────────────────────
+
+export async function saveCustomMeal(userId, meal) {
+  const { data, error } = await supabase
+    .from('custom_meals')
+    .insert({
+      user_id:            userId,
+      short_name:         meal.short_name || null,
+      meal_name:          meal.meal_name,
+      recipe:             meal.recipe || null,
+      ingredients:        meal.ingredients || null,
+      source_description: meal.source_description || null,
+      nutrition:          meal.nutrition || null,
+    })
+    .select('id')
+    .single()
+  assertNoError(error, 'saveCustomMeal')
+  return data
+}
+
+export async function getCustomMeals(userId) {
+  const { data, error } = await supabase
+    .from('custom_meals')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+  assertNoError(error, 'getCustomMeals')
+  return data || []
+}
+
+export async function deleteCustomMeal(userId, id) {
+  const { error } = await supabase
+    .from('custom_meals')
+    .delete()
+    .eq('id', id)
+    .eq('user_id', userId)
+  assertNoError(error, 'deleteCustomMeal')
+}

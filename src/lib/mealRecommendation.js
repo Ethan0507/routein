@@ -261,7 +261,7 @@ export async function analyzeLoggedMealDescription(description) {
       messages: [
         {
           role: 'system',
-          content: 'Estimate macros for the meal described. Return ONLY JSON: { "calories": <int>, "protein": <int>, "carbs": <int>, "fat": <int> }',
+          content: 'Estimate macros for the meal described. Return ONLY JSON: { "calories": <int>, "protein": <int>, "carbs": <int>, "fat": <int>, "fibre": <int> }',
         },
         { role: 'user', content: description },
       ],
@@ -276,6 +276,7 @@ export async function analyzeLoggedMealDescription(description) {
     protein:  content.protein  || null,
     carbs:    content.carbs    || null,
     fat:      content.fat      || null,
+    fibre:    content.fibre    || null,
   }
 }
 

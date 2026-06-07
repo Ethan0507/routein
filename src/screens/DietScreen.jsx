@@ -8,6 +8,7 @@ import {
   getMealLogsForDate, upsertMealLog, deleteMealLog,
   getActiveMealPlan, getProfile, upsertProfile, updateMealPlan,
   getGroceryHaveState, saveGroceryHaveState,
+  saveCustomMeal,
 } from '../lib/db'
 import { analyzeLoggedMealDescription } from '../lib/mealRecommendation'
 import { computeMealDeductions, applyDeductions } from '../lib/groceryUtils'
@@ -47,11 +48,18 @@ export default function DietScreen() {
   const [loggingSlot, setLoggingSlot] = useState(null) // slot key being logged
   const [unloggingSlot, setUnloggingSlot] = useState(null)
 
-  // Custom override modal
-  const [customModal, setCustomModal] = useState(null) // { slot, mealName } | 'free'
-  const [customDesc, setCustomDesc]   = useState('')
-  const [estimating, setEstimating]   = useState(false)
-  const [customError, setCustomError] = useState('')
+  // Custom override modal — 2-phase: describe → preview + save
+  const [customModal, setCustomModal]   = useState(null)  // { slot, mealName }
+  const [customDesc, setCustomDesc]     = useState('')
+  const [customPhase, setCustomPhase]   = useState('input') // 'input' | 'preview'
+  const [customNutrition, setCustomNutrition] = useState({ calories: '', protein: '', carbs: '', fat: '', fibre: '' })
+  const [estimating, setEstimating]     = useState(false)
+  const [customError, setCustomError]   = useState('')
+  // Save-as-custom-meal
+  const [savingCustom, setSavingCustom] = useState(false)
+  const [saveAsCustom, setSaveAsCustom] = useState(false)
+  const [customMealName, setCustomMealName] = useState('')
+  const [savedConfirm, setSavedConfirm] = useState(false)
 
   // Free-form add modal
   const [freeModal, setFreeModal]     = useState(false)
@@ -159,43 +167,81 @@ export default function DietScreen() {
     }
   }
 
-  // ── Log a custom override for a planned slot ─────────────────────────────────
+  // ── Custom override modal helpers ────────────────────────────────────────────
   function openCustomModal(slot) {
     const meal = dayMeals?.[slot]
     const slotLabel = allSlots.find(s => s.key === slot)?.label || slot
     setCustomModal({ slot, mealName: meal?.name || slotLabel })
     setCustomDesc('')
+    setCustomPhase('input')
+    setCustomNutrition({ calories: '', protein: '', carbs: '', fat: '', fibre: '' })
     setCustomError('')
+    setSaveAsCustom(false)
+    setCustomMealName('')
+    setSavedConfirm(false)
   }
 
-  async function submitCustom() {
+  async function estimateCustom() {
     if (!customDesc.trim() || estimating) return
     setEstimating(true)
     setCustomError('')
     try {
-      let nutrition = null
-      try {
-        nutrition = await analyzeLoggedMealDescription(customDesc.trim())
-      } catch {
-        // continue without macros
-      }
-      const slot = customModal.slot
-      await upsertMealLog(user.id, today, slot, {
-        completed:          true,
-        consumed_at:        nowHHmm(),
-        custom_description: customDesc.trim(),
-        nutrition,
+      const n = await analyzeLoggedMealDescription(customDesc.trim())
+      setCustomNutrition({
+        calories: n.calories ?? '',
+        protein:  n.protein  ?? '',
+        carbs:    n.carbs    ?? '',
+        fat:      n.fat      ?? '',
+        fibre:    n.fibre    ?? '',
       })
-      setMealLogs(prev => ({
-        ...prev,
-        [slot]: { meal_slot: slot, completed: true, consumed_at: nowHHmm(), custom_description: customDesc.trim(), nutrition },
-      }))
-      setCustomModal(null)
+      setCustomMealName(customDesc.trim().slice(0, 50))
+      setCustomPhase('preview')
     } catch (err) {
-      setCustomError(err.message)
+      setCustomError(err.message || 'Estimation failed. You can still log without macros.')
+      setCustomPhase('preview')
+      setCustomNutrition({ calories: '', protein: '', carbs: '', fat: '', fibre: '' })
     } finally {
       setEstimating(false)
     }
+  }
+
+  async function logCustom() {
+    const slot = customModal?.slot
+    if (!slot) return
+    const nutrition = {
+      calories: customNutrition.calories !== '' ? Number(customNutrition.calories) : null,
+      protein:  customNutrition.protein  !== '' ? Number(customNutrition.protein)  : null,
+      carbs:    customNutrition.carbs    !== '' ? Number(customNutrition.carbs)    : null,
+      fat:      customNutrition.fat      !== '' ? Number(customNutrition.fat)      : null,
+      fibre:    customNutrition.fibre    !== '' ? Number(customNutrition.fibre)    : null,
+    }
+
+    // Optionally save as custom meal first
+    if (saveAsCustom && customMealName.trim()) {
+      setSavingCustom(true)
+      try {
+        await saveCustomMeal(user.id, {
+          meal_name:          customMealName.trim(),
+          source_description: customDesc.trim(),
+          nutrition,
+        })
+        setSavedConfirm(true)
+      } catch { /* non-fatal */ } finally {
+        setSavingCustom(false)
+      }
+    }
+
+    await upsertMealLog(user.id, today, slot, {
+      completed:          true,
+      consumed_at:        nowHHmm(),
+      custom_description: customDesc.trim(),
+      nutrition,
+    })
+    setMealLogs(prev => ({
+      ...prev,
+      [slot]: { meal_slot: slot, completed: true, consumed_at: nowHHmm(), custom_description: customDesc.trim(), nutrition },
+    }))
+    setCustomModal(null)
   }
 
   // ── Free-form meal add ────────────────────────────────────────────────────────
@@ -412,33 +458,115 @@ export default function DietScreen() {
         )}
       </div>
 
-      {/* Custom override modal */}
-      <Modal open={!!customModal} onClose={() => setCustomModal(null)} title={customModal ? `Log ${allSlots.find(s => s.key === customModal.slot)?.label || customModal.slot}` : ''}>
-        <div className="space-y-3">
-          <p className="text-xs text-textSecondary">
-            Planned: <span className="font-medium text-textPrimary">{customModal?.mealName}</span>
-          </p>
-          <div>
-            <label className="text-xs font-medium text-textSecondary block mb-1">What did you actually eat?</label>
-            <textarea
-              className="w-full border border-border rounded-xl px-3 py-2.5 text-sm text-textPrimary focus:outline-none focus:border-teal-500 resize-none"
-              rows={3}
-              placeholder='e.g. "2 scrambled eggs on toast with butter"'
-              value={customDesc}
-              onChange={e => setCustomDesc(e.target.value)}
-              autoFocus
-            />
-            <p className="text-[11px] text-textSecondary mt-1">AI will estimate the macros from your description.</p>
+      {/* Custom override modal — 2-phase */}
+      <Modal
+        open={!!customModal}
+        onClose={() => setCustomModal(null)}
+        title={customModal ? `Log ${allSlots.find(s => s.key === customModal.slot)?.label || customModal.slot}` : ''}
+      >
+        {customPhase === 'input' ? (
+          <div className="space-y-3">
+            <p className="text-xs text-textSecondary">
+              Planned: <span className="font-medium text-textPrimary">{customModal?.mealName}</span>
+            </p>
+            <div>
+              <label className="text-xs font-medium text-textSecondary block mb-1">What did you eat?</label>
+              <textarea
+                className="w-full border border-border rounded-xl px-3 py-2.5 text-sm text-textPrimary focus:outline-none focus:border-teal-500 resize-none"
+                rows={3}
+                placeholder='e.g. "2 scrambled eggs on wholegrain toast with butter"'
+                value={customDesc}
+                onChange={e => setCustomDesc(e.target.value)}
+                autoFocus
+              />
+              <p className="text-[11px] text-textSecondary mt-1">Describe what you ate including quantities. AI will estimate macros.</p>
+            </div>
+            {customError && <p className="text-xs text-red-500">{customError}</p>}
+            <button
+              onClick={estimateCustom}
+              disabled={!customDesc.trim() || estimating}
+              className="w-full bg-teal-500 text-white font-semibold py-3 rounded-xl disabled:opacity-40 active:bg-teal-600 flex items-center justify-center gap-2"
+            >
+              {estimating ? <><Loader2 size={16} className="animate-spin" /> Estimating…</> : 'Estimate macros →'}
+            </button>
           </div>
-          {customError && <p className="text-xs text-red-500">{customError}</p>}
-          <button
-            onClick={submitCustom}
-            disabled={!customDesc.trim() || estimating}
-            className="w-full bg-teal-500 text-white font-semibold py-3 rounded-xl disabled:opacity-40 active:bg-teal-600 flex items-center justify-center gap-2"
-          >
-            {estimating ? <><Loader2 size={16} className="animate-spin" /> Estimating…</> : 'Log meal'}
-          </button>
-        </div>
+        ) : (
+          <div className="space-y-3">
+            {/* What they ate */}
+            <div className="bg-bg rounded-xl px-3 py-2.5">
+              <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wide mb-0.5">You ate</p>
+              <p className="text-sm text-textPrimary">{customDesc}</p>
+            </div>
+
+            {/* Estimated macros — all editable */}
+            <div>
+              <p className="text-xs font-semibold text-textSecondary uppercase tracking-wide mb-2">Estimated macros <span className="normal-case font-normal">(tap to adjust)</span></p>
+              <div className="grid grid-cols-5 gap-1.5">
+                {[
+                  { key: 'calories', label: 'kcal',    color: 'text-teal-600' },
+                  { key: 'protein',  label: 'P (g)',   color: 'text-blue-500' },
+                  { key: 'carbs',    label: 'C (g)',   color: 'text-orange-400' },
+                  { key: 'fat',      label: 'F (g)',   color: 'text-textSecondary' },
+                  { key: 'fibre',    label: 'Fi (g)',  color: 'text-green-600' },
+                ].map(({ key, label, color }) => (
+                  <div key={key} className="text-center">
+                    <input
+                      type="number"
+                      className={`w-full border border-border rounded-lg px-1 py-2 text-sm font-bold text-center focus:outline-none focus:border-teal-500 ${color}`}
+                      value={customNutrition[key]}
+                      onChange={e => setCustomNutrition(n => ({ ...n, [key]: e.target.value }))}
+                      placeholder="—"
+                    />
+                    <p className="text-[9px] text-textSecondary mt-0.5">{label}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Save as custom meal toggle */}
+            <div className="border border-border rounded-xl p-3 space-y-2">
+              <div
+                className="flex items-center justify-between cursor-pointer"
+                onClick={() => setSaveAsCustom(s => !s)}
+              >
+                <div>
+                  <p className="text-sm font-medium text-textPrimary">Save as custom meal</p>
+                  <p className="text-xs text-textSecondary">Reuse this meal when logging in future</p>
+                </div>
+                <div className={`w-10 h-6 rounded-full relative transition-colors ${saveAsCustom ? 'bg-teal-500' : 'bg-border'}`}>
+                  <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${saveAsCustom ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                </div>
+              </div>
+              {saveAsCustom && (
+                <input
+                  className="w-full border border-border rounded-lg px-3 py-2 text-sm text-textPrimary focus:outline-none focus:border-teal-500"
+                  placeholder="Meal name (e.g. Eggs on toast)"
+                  value={customMealName}
+                  onChange={e => setCustomMealName(e.target.value)}
+                  autoFocus
+                />
+              )}
+            </div>
+
+            {customError && <p className="text-xs text-red-500">{customError}</p>}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCustomPhase('input')}
+                className="px-3 py-2.5 rounded-xl border border-border text-sm text-textSecondary active:bg-bg"
+              >
+                ← Edit
+              </button>
+              <button
+                onClick={logCustom}
+                disabled={savingCustom || (saveAsCustom && !customMealName.trim())}
+                className="flex-1 bg-teal-500 text-white font-semibold py-2.5 rounded-xl disabled:opacity-40 active:bg-teal-600 flex items-center justify-center gap-2"
+              >
+                {savingCustom ? <Loader2 size={15} className="animate-spin" /> : 'Log meal'}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Free-form add meal modal */}
